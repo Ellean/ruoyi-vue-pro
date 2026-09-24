@@ -17,6 +17,7 @@ import cn.iocoder.yudao.module.ai.framework.ai.core.model.hunyuan.HunYuanChatMod
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.midjourney.api.MidjourneyApi;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.minimax.MiniMaxChatModel;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.moonshot.MoonshotChatModel;
+import cn.iocoder.yudao.module.ai.framework.ai.core.model.openai.CompatibleOpenAiImageModel;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.siliconflow.SiliconFlowApiConstants;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.siliconflow.SiliconFlowChatModel;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.siliconflow.SiliconFlowImageApi;
@@ -449,9 +450,24 @@ public class AiModelFactoryImpl implements AiModelFactory {
     private static OpenAiChatOptions.Builder buildOpenAiChatOptions(String apiKey, String url) {
         OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder().apiKey(apiKey);
         if (StrUtil.isNotEmpty(url)) {
-            optionsBuilder.baseUrl(url);
+            optionsBuilder.baseUrl(normalizeOpenAiBaseUrl(url));
         }
         return optionsBuilder;
+    }
+
+    /**
+     * OpenAI Java SDK 默认 base 为 https://api.openai.com/v1，请求路径为 images/generations 等（不再拼 /v1）。
+     * 中转站若只填 https://api.xxx.com，会打到站点首页 HTML，从而报 Error reading response（JSON 遇到 &lt;）。
+     */
+    private static String normalizeOpenAiBaseUrl(String url) {
+        String trimmed = StrUtil.removeSuffix(StrUtil.trim(url), "/");
+        if (StrUtil.isEmpty(trimmed)) {
+            return trimmed;
+        }
+        if (!StrUtil.endWithIgnoreCase(trimmed, "/v1")) {
+            return trimmed + "/v1";
+        }
+        return trimmed;
     }
 
     /**
@@ -491,16 +507,15 @@ public class AiModelFactoryImpl implements AiModelFactory {
     }
 
     /**
-     * 可参考 {@link OpenAiImageAutoConfiguration} 的 openAiImageModel 方法
+     * 可参考 {@link OpenAiImageAutoConfiguration} 的 openAiImageModel 方法。
+     * 使用 {@link CompatibleOpenAiImageModel}：中转常返回空 url + b64_json，官方 OpenAiImageModel 会误丢 b64。
      */
-    private OpenAiImageModel buildOpenAiImageModel(String openAiToken, String url) {
+    private ImageModel buildOpenAiImageModel(String openAiToken, String url) {
         OpenAiImageOptions.Builder optionsBuilder = OpenAiImageOptions.builder().apiKey(openAiToken);
         if (StrUtil.isNotEmpty(url)) {
-            optionsBuilder.baseUrl(url);
+            optionsBuilder.baseUrl(normalizeOpenAiBaseUrl(url));
         }
-        return OpenAiImageModel.builder()
-                .options(optionsBuilder.build())
-                .build();
+        return new CompatibleOpenAiImageModel(optionsBuilder.build());
     }
 
     /**

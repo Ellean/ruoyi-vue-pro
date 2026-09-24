@@ -119,10 +119,18 @@ public class AiImageServiceImpl implements AiImageService {
                 throw new IllegalArgumentException("生成结果为空");
             }
 
-            // 2. 上传到文件服务
-            String b64Json = response.getResult().getOutput().getB64Json();
-            byte[] fileContent = StrUtil.isNotEmpty(b64Json) ? Base64.decode(b64Json)
-                    : HttpUtil.downloadBytes(response.getResult().getOutput().getUrl());
+            // 2. 上传到文件服务（中转可能返回空 url + b64_json）
+            var output = response.getResult().getOutput();
+            String b64Json = output.getB64Json();
+            String url = output.getUrl();
+            byte[] fileContent;
+            if (StrUtil.isNotEmpty(b64Json)) {
+                fileContent = Base64.decode(b64Json);
+            } else if (StrUtil.isNotBlank(url)) {
+                fileContent = HttpUtil.downloadBytes(url);
+            } else {
+                throw new IllegalArgumentException("生成结果缺少图片数据（url 与 b64_json 均为空）");
+            }
             String filePath = fileApi.createFile(fileContent);
 
             // 3. 更新数据库
@@ -139,11 +147,23 @@ public class AiImageServiceImpl implements AiImageService {
     private static ImageOptions buildImageOptions(AiImageDrawReqVO draw, AiModelDO model) {
         if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.OPENAI.getPlatform())) {
             // https://platform.openai.com/docs/api-reference/images/create
-            return OpenAiImageOptions.builder().model(model.getModel())
-                    .height(draw.getHeight()).width(draw.getWidth())
-                    .style(MapUtil.getStr(draw.getOptions(), "style")) // 风格
-                    .responseFormat("b64_json")
-                    .build();
+            // gpt-image-*：中转/官方都不接受 response_format，且默认返回 b64_json；勿传 style
+            // dall-e-2/3：可显式要 b64_json；仅 dall-e-3 支持 style
+            boolean gptImage = StrUtil.startWithIgnoreCase(model.getModel(), "gpt-image");
+            OpenAiImageOptions.Builder builder = OpenAiImageOptions.builder()
+                    .model(model.getModel())
+                    .height(draw.getHeight()).width(draw.getWidth());
+            if (gptImage) {
+                // Aixoras/中转：gpt-image 带 response_format 会拒；quality=auto 为常用兼容写法
+                builder.quality("auto");
+            } else {
+                builder.responseFormat("b64_json");
+            }
+            String style = MapUtil.getStr(draw.getOptions(), "style");
+            if (StrUtil.isNotEmpty(style) && StrUtil.equals(model.getModel(), "dall-e-3")) {
+                builder.style(style);
+            }
+            return builder.build();
         } else if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.SILICON_FLOW.getPlatform())) {
             // https://docs.siliconflow.cn/cn/api-reference/images/images-generations
             return SiliconFlowImageOptions.builder().model(model.getModel())
