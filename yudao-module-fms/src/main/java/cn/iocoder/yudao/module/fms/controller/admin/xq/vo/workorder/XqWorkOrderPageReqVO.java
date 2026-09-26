@@ -18,8 +18,29 @@ public class XqWorkOrderPageReqVO extends PageParam {
     @Schema(description = "标题")
     private String title;
 
+    @Schema(description = "Item Code / SKU")
+    private String externalSku;
+
+    @Schema(description = "关键词（任务号/标题/SKU）")
+    private String keyword;
+
     @Schema(description = "状态")
     private Integer status;
+
+    @Schema(description = "Giga 类目 id")
+    private Long gigaCategoryId;
+
+    @Schema(description = "文案领取人")
+    private Long copyUserId;
+
+    @Schema(description = "美工人员")
+    private Long imageUserId;
+
+    @Schema(description = "是否已完成文案")
+    private Boolean copyReady;
+
+    @Schema(description = "工作流阶段 copy/image/list/done")
+    private String workflowPhase;
 
     @Schema(description = "认领人", hidden = true)
     private Long assigneeUserId;
