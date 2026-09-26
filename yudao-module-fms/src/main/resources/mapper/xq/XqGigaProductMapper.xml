@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.iocoder.yudao.module.fms.dal.mysql.xq.XqGigaProductMapper">
+
+    <!-- 每个 SKU 取「有价/有图/最新」的最优快照 -->
+    <sql id="BestSnapshot">
+        (
+          SELECT s1.*
+          FROM t_gigab2b_product_snapshot s1
+          INNER JOIN (
+            SELECT sku,
+                   SUBSTRING_INDEX(
+                     GROUP_CONCAT(id ORDER BY
+                       (CASE WHEN IFNULL(price,0) &gt; 0 OR IFNULL(discounted_price,0) &gt; 0 OR IFNULL(exclusive_price,0) &gt; 0 THEN 2
+                             WHEN price_json IS NOT NULL AND price_json NOT IN ('', '{}', 'null') THEN 1
+                             ELSE 0 END) DESC,
+                       (CASE WHEN detail_json IS NOT NULL AND JSON_LENGTH(JSON_EXTRACT(detail_json,'$.imageUrls')) &gt; 0 THEN 1 ELSE 0 END) DESC,
+                       sync_time DESC
+                     ), ',', 1
+                   ) AS best_id
+            FROM t_gigab2b_product_snapshot
+            WHERE detail_json IS NOT NULL
+            GROUP BY sku
+          ) bx ON bx.best_id = s1.id
+        )
+    </sql>
+
+    <!-- 每个 SKU 取一条 list（优先有 erp/最近同步） -->
+    <sql id="BestList">
+        (
+          SELECT l1.*
+          FROM t_gigab2b_product_list l1
+          INNER JOIN (
+            SELECT sku,
+                   SUBSTRING_INDEX(GROUP_CONCAT(id ORDER BY sync_time DESC, id DESC), ',', 1) AS best_id
+            FROM t_gigab2b_product_list
+            GROUP BY sku
+          ) lx ON lx.best_id = l1.id
+        )
+    </sql>
+
+    <sql id="SelectColumns">
+        l.id AS id,
+        l.sku AS sku,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mpn')) AS itemCode,
+        COALESCE(NULLIF(l.product_name, ''), s.product_name,
+                 JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.productName'))) AS name,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.category')) AS categoryName,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.categoryCode')) AS UNSIGNED) AS gigaCategoryId,
+        COALESCE(
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mainImageUrl')), ''),
+          JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.imageUrls[0]'))
+        ) AS imageUrl,
+        JSON_EXTRACT(s.detail_json, '$.imageUrls') AS imageUrlsJson,
+        IFNULL(JSON_LENGTH(JSON_EXTRACT(s.detail_json, '$.imageUrls')), 0) AS imageCount,
+        COALESCE(
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.description')), ''),
+          JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.characteristics'))
+        ) AS description,
+        COALESCE(
+          NULLIF(s.seller_available_inventory, 0),
+          NULLIF(s.buyer_available_inventory, 0),
+          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.inventory_json, '$.sellerInventoryInfo.sellerAvailableInventory')) AS SIGNED),
+          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.inventory_json, '$.buyerInventoryInfo.totalBuyerAvailableInventory')) AS SIGNED),
+          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.inventory_json, '$.sellerAvailableInventory')) AS SIGNED),
+          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.inventory_json, '$.buyerAvailableInventory')) AS SIGNED),
+          0
+        ) AS qtyAvailable,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.sellerInfo.sellerCode')) AS supplierCode,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.sellerInfo.sellerStore')) AS supplierName,
+        COALESCE(
+          NULLIF(s.price, 0),
+          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.price')) AS DECIMAL(14,4))
+        ) AS price,
+        COALESCE(
+          NULLIF(s.exclusive_price, 0),
+          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.exclusivePrice')) AS DECIMAL(14,4))
+        ) AS exclusivePrice,
+        COALESCE(
+          NULLIF(s.discounted_price, 0),
+          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.discountedPrice')) AS DECIMAL(14,4))
+        ) AS discountedPrice,
+        COALESCE(s.currency, JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.currency')), 'USD') AS currency,
+        s.sku_available AS skuAvailable,
+        CASE
+          WHEN JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.newArrivalFlag')) IN ('1', 'true', 'TRUE')
+            THEN 'Listed Today'
+          ELSE NULL
+        END AS listedTag,
+        COALESCE(l.sync_time, l.create_date, s.sync_time) AS createTime,
+        CONCAT('Giga/', IFNULL(l.source_platform, 'giga')) AS remark
+    </sql>
+
+    <sql id="FromJoin">
+        FROM <include refid="BestList"/> l
+        INNER JOIN <include refid="BestSnapshot"/> s ON s.sku = l.sku
+    </sql>
+
+    <select id="selectPage" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
+        SELECT
+        <include refid="SelectColumns"/>
+        <include refid="FromJoin"/>
+        WHERE s.detail_json IS NOT NULL
+        <if test="name != null and name != ''">
+            AND (
+              l.sku LIKE CONCAT('%', #{name}, '%')
+              OR l.product_name LIKE CONCAT('%', #{name}, '%')
+              OR s.product_name LIKE CONCAT('%', #{name}, '%')
+              OR JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mpn')) LIKE CONCAT('%', #{name}, '%')
+            )
+        </if>
+        <if test="categoryIds != null and categoryIds.size() &gt; 0">
+            AND CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.categoryCode')) AS UNSIGNED) IN
+            <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">
+                #{cid}
+            </foreach>
+        </if>
+        ORDER BY COALESCE(l.sync_time, l.create_date) DESC, l.id DESC
+    </select>
+
+    <select id="selectById" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
+        SELECT
+        <include refid="SelectColumns"/>
+        FROM t_gigab2b_product_list l
+        INNER JOIN <include refid="BestSnapshot"/> s ON s.sku = l.sku
+        WHERE l.id = #{id}
+        LIMIT 1
+    </select>
+
+</mapper>

@@ -78,6 +78,11 @@ spring:
           #          password: Yudao@2024 # OpenGauss 连接的示例
           #          username: root # 瀚高 HighGo 连接的示例
           #          password: 123456 # 瀚高 HighGo 连接的示例
+        xq: # xq-erp / Giga 原库（品库读产品）
+          lazy: true
+          url: jdbc:mysql://127.0.0.1:3306/xq_finance_test?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true&characterEncoding=UTF-8
+          username: root
+          password: root
         slave: # 模拟从库，可根据自己需要修改
           lazy: true # 开启懒加载，保证启动速度
           url: jdbc:mysql://127.0.0.1:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true&nullCatalogMeansCurrent=true
