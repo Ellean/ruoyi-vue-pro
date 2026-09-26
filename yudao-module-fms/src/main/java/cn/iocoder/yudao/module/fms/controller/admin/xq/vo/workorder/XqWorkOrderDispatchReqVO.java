@@ -1,0 +1,39 @@
+package cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
+import lombok.Data;
+
+import java.util.List;
+
+@Schema(description = "管理后台 - 选品库下发工作台 Request VO")
+@Data
+public class XqWorkOrderDispatchReqVO {
+
+    @Schema(description = "选中的产品列表", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotEmpty(message = "请先选择要下发的产品")
+    @Valid
+    private List<Item> items;
+
+    @Data
+    public static class Item {
+        @Schema(description = "SKU / Item Code", requiredMode = Schema.RequiredMode.REQUIRED)
+        @NotBlank(message = "SKU 不能为空")
+        private String sku;
+
+        @Schema(description = "标题")
+        private String title;
+
+        @Schema(description = "封面图")
+        private String coverUrl;
+
+        @Schema(description = "分类名")
+        private String categoryName;
+
+        @Schema(description = "Giga 类目 id")
+        private Long gigaCategoryId;
+    }
+
+}

@@ -193,5 +193,9 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_SOURCE_ALREADY_CLAIMED = new ErrorCode(1_052_200_011, "货源已被认领");
     ErrorCode XQ_WORK_ORDER_NOT_EXISTS = new ErrorCode(1_052_200_020, "作业单不存在");
     ErrorCode XQ_WORK_ORDER_STATUS_INVALID = new ErrorCode(1_052_200_021, "作业单状态不允许该操作");
+    ErrorCode XQ_WORK_ORDER_ALREADY_EXISTS = new ErrorCode(1_052_200_022, "该 SKU 已有进行中的工作台任务");
+    ErrorCode XQ_DISPATCH_EMPTY = new ErrorCode(1_052_200_023, "请先选择要下发的产品");
+    ErrorCode XQ_WORK_ORDER_COPY_REQUIRED = new ErrorCode(1_052_200_024, "请先完成文案，再生成图片");
+    ErrorCode XQ_WORK_ORDER_IMAGE_REQUIRED = new ErrorCode(1_052_200_025, "请先完成图片，再上架");
 
 }

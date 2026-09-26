@@ -1,12 +1,17 @@
 package cn.iocoder.yudao.module.fms.service.xq;
 
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderAssignImageReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBatchIdsReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCompleteReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderDispatchReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 
 import jakarta.validation.Valid;
+
+import java.util.List;
 
 public interface XqWorkOrderService {
 
@@ -16,7 +21,18 @@ public interface XqWorkOrderService {
 
     void updateWorkOrder(@Valid XqWorkOrderUpdateReqVO updateReqVO);
 
-    /** 完成入库：写品库 + 关作业 */
+    List<XqWorkOrderDO> dispatchFromLibrary(@Valid XqWorkOrderDispatchReqVO reqVO, Long userId);
+
+    XqWorkOrderDO generateCopy(Long id, Long userId);
+
+    /** 批量生成文案：领取为当前用户文案任务 */
+    List<XqWorkOrderDO> batchGenerateCopy(@Valid XqWorkOrderBatchIdsReqVO reqVO, Long userId);
+
+    XqWorkOrderDO generateImage(Long id);
+
+    /** 批量把已完成文案的任务分配给美工 */
+    int batchAssignImage(@Valid XqWorkOrderAssignImageReqVO reqVO, Long operatorUserId);
+
     Long completeWorkOrder(@Valid XqWorkOrderCompleteReqVO completeReqVO);
 
 }
