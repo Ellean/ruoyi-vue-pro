@@ -186,4 +186,12 @@ public interface ErrorCodeConstants {
     // ========== 首页 1-052-108-000 ==========
     ErrorCode HOME_METRIC_INVALID = new ErrorCode(1_052_108_001, "首页财务指标不正确");
 
+    // ========== 品库/工作区演示 1-052-200-000 ==========
+    ErrorCode XQ_PRODUCT_NOT_EXISTS = new ErrorCode(1_052_200_000, "品库产品不存在");
+    ErrorCode XQ_PRODUCT_SKU_DUPLICATE = new ErrorCode(1_052_200_001, "SKU 已存在");
+    ErrorCode XQ_SOURCE_NOT_EXISTS = new ErrorCode(1_052_200_010, "货源不存在");
+    ErrorCode XQ_SOURCE_ALREADY_CLAIMED = new ErrorCode(1_052_200_011, "货源已被认领");
+    ErrorCode XQ_WORK_ORDER_NOT_EXISTS = new ErrorCode(1_052_200_020, "作业单不存在");
+    ErrorCode XQ_WORK_ORDER_STATUS_INVALID = new ErrorCode(1_052_200_021, "作业单状态不允许该操作");
+
 }
