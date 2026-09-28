@@ -197,6 +197,6 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_DISPATCH_EMPTY = new ErrorCode(1_052_200_023, "请先选择要下发的产品");
     ErrorCode XQ_WORK_ORDER_COPY_REQUIRED = new ErrorCode(1_052_200_024, "请先完成文案，再生成图片");
     ErrorCode XQ_WORK_ORDER_IMAGE_REQUIRED = new ErrorCode(1_052_200_025, "请先完成图片，再上架");
-    ErrorCode XQ_DISPATCH_LISTING_REQUIRED = new ErrorCode(1_052_200_026, "请先选择上架平台、店铺与分类");
+    ErrorCode XQ_DISPATCH_LISTING_REQUIRED = new ErrorCode(1_052_200_026, "请先选择上架平台与平台分类");
 
 }
