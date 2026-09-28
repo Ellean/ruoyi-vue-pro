@@ -64,7 +64,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (reqVO == null || CollUtil.isEmpty(reqVO.getItems())) {
             throw exception(XQ_DISPATCH_EMPTY);
         }
-        if (StrUtil.hasBlank(reqVO.getListingPlatformId(), reqVO.getListingShopId(), reqVO.getListingCategoryId())) {
+        if (StrUtil.hasBlank(reqVO.getListingPlatformId(), reqVO.getListingCategoryId())) {
             throw exception(XQ_DISPATCH_LISTING_REQUIRED);
         }
         List<XqWorkOrderDO> created = new ArrayList<>();

@@ -12,15 +12,14 @@ import java.util.List;
 @Data
 public class XqWorkOrderDispatchReqVO {
 
-    @Schema(description = "上架平台 ID", requiredMode = Schema.RequiredMode.REQUIRED)
+    @Schema(description = "上架平台 ID（原库 t_giga_listing_platform）", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotBlank(message = "请选择上架平台")
     private String listingPlatformId;
 
-    @Schema(description = "上架店铺 ID", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "请选择上架店铺")
+    @Schema(description = "上架店铺 ID（原库 t_giga_listing_shop，可选）")
     private String listingShopId;
 
-    @Schema(description = "上架分类 ID", requiredMode = Schema.RequiredMode.REQUIRED)
+    @Schema(description = "上架分类 ID（原库 t_giga_listing_category）", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotBlank(message = "请选择平台分类")
     private String listingCategoryId;
 
