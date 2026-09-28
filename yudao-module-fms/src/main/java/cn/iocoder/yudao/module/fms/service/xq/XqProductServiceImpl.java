@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.fms.service.xq;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONUtil;
@@ -12,8 +13,6 @@ import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqProductDO;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqGigaProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqProductMapper;
-import com.baomidou.mybatisplus.core.metadata.IPage;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
@@ -21,8 +20,10 @@ import org.springframework.validation.annotation.Validated;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
@@ -67,7 +68,7 @@ public class XqProductServiceImpl implements XqProductService {
         if (row == null) {
             throw exception(XQ_PRODUCT_NOT_EXISTS);
         }
-        return toResp(row);
+        return toResp(row, true);
     }
 
     @Override
@@ -77,30 +78,62 @@ public class XqProductServiceImpl implements XqProductService {
             List<Long> ids = categoryService.listSubtreeGigaIds(pageReqVO.getGigaCategoryId());
             categoryIds = ids.isEmpty() ? Collections.singletonList(-1L) : ids;
         }
-        IPage<XqGigaProductRow> page = gigaProductMapper.selectPage(
-                new Page<>(pageReqVO.getPageNo(), pageReqVO.getPageSize()),
-                pageReqVO.getName(),
-                categoryIds);
-        List<XqProductRespVO> list = page.getRecords().stream().map(this::toResp).toList();
-        return new PageResult<>(list, page.getTotal());
+        int pageNo = pageReqVO.getPageNo() == null || pageReqVO.getPageNo() < 1
+                ? 1 : pageReqVO.getPageNo();
+        int pageSize = pageReqVO.getPageSize() == null || pageReqVO.getPageSize() < 1
+                ? 20 : pageReqVO.getPageSize();
+        long offset = (long) (pageNo - 1) * pageSize;
+
+        Long total = gigaProductMapper.selectPageCount(pageReqVO.getName(), categoryIds);
+        if (total == null || total <= 0) {
+            return new PageResult<>(Collections.emptyList(), 0L);
+        }
+        List<String> ids = gigaProductMapper.selectPageIds(
+                pageReqVO.getName(), categoryIds, offset, pageSize);
+        if (CollUtil.isEmpty(ids)) {
+            return new PageResult<>(Collections.emptyList(), total);
+        }
+        List<XqGigaProductRow> rows = gigaProductMapper.selectListByIds(ids);
+        Map<String, XqGigaProductRow> byId = new LinkedHashMap<>();
+        for (XqGigaProductRow row : rows) {
+            byId.put(row.getId(), row);
+        }
+        // 保持分页顺序
+        List<XqProductRespVO> list = new ArrayList<>(ids.size());
+        for (String id : ids) {
+            XqGigaProductRow row = byId.get(id);
+            if (row != null) {
+                list.add(toResp(row, false));
+            }
+        }
+        return new PageResult<>(list, total);
     }
 
-    private XqProductRespVO toResp(XqGigaProductRow row) {
+    private XqProductRespVO toResp(XqGigaProductRow row, boolean withGallery) {
         XqProductRespVO vo = BeanUtils.toBean(row, XqProductRespVO.class);
         if (Boolean.FALSE.equals(row.getSkuAvailable())) {
             vo.setStatus(1);
         } else {
             vo.setStatus(0);
         }
-        List<String> urls = parseImageUrls(row.getImageUrlsJson());
-        if (StrUtil.isNotBlank(row.getImageUrl())
-                && urls.stream().noneMatch(u -> u.equals(row.getImageUrl()))) {
-            urls.add(0, row.getImageUrl());
-        }
-        vo.setImageUrls(urls);
-        vo.setImageCount(urls.isEmpty() ? row.getImageCount() : urls.size());
-        if (StrUtil.isBlank(vo.getImageUrl()) && !urls.isEmpty()) {
-            vo.setImageUrl(urls.get(0));
+        if (withGallery) {
+            List<String> urls = parseImageUrls(row.getImageUrlsJson());
+            if (StrUtil.isNotBlank(row.getImageUrl())
+                    && urls.stream().noneMatch(u -> u.equals(row.getImageUrl()))) {
+                urls.add(0, row.getImageUrl());
+            }
+            vo.setImageUrls(urls);
+            vo.setImageCount(urls.isEmpty() ? row.getImageCount() : urls.size());
+            if (StrUtil.isBlank(vo.getImageUrl()) && !urls.isEmpty()) {
+                vo.setImageUrl(urls.get(0));
+            }
+        } else {
+            // 列表：只回封面 + 数量，不带全量 imageUrls / HTML 文案
+            vo.setImageUrls(Collections.emptyList());
+            vo.setDescription(null);
+            if (vo.getImageCount() == null) {
+                vo.setImageCount(0);
+            }
         }
         return vo;
     }
