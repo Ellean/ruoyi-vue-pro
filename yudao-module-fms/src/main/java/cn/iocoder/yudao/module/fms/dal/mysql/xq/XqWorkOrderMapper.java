@@ -21,7 +21,11 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eqIfPresent(XqWorkOrderDO::getCopyUserId, reqVO.getCopyUserId())
                 .eqIfPresent(XqWorkOrderDO::getImageUserId, reqVO.getImageUserId())
                 .eqIfPresent(XqWorkOrderDO::getWorkflowPhase, reqVO.getWorkflowPhase())
+                .eqIfPresent(XqWorkOrderDO::getListingPlatformId, reqVO.getListingPlatformId())
+                .eqIfPresent(XqWorkOrderDO::getListingShopId, reqVO.getListingShopId())
+                .eqIfPresent(XqWorkOrderDO::getListingCategoryId, reqVO.getListingCategoryId())
                 .and(Boolean.TRUE.equals(reqVO.getCopyReady()), w -> w
+
                         .isNotNull(XqWorkOrderDO::getContentTitle)
                         .ne(XqWorkOrderDO::getContentTitle, ""))
                 .and(reqVO.getKeyword() != null && !reqVO.getKeyword().isBlank(), w -> w

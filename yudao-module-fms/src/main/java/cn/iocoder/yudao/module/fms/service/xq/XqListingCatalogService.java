@@ -5,12 +5,15 @@ import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleSaveReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqListingCategoryRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqListingPlatformRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqListingShopRespVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqCopyGenRuleDO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingCategoryDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingPlatformDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingShopDO;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqCopyGenRuleMapper;
+import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingCategoryMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingPlatformMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingShopMapper;
 import jakarta.annotation.Resource;
@@ -19,6 +22,7 @@ import org.springframework.validation.annotation.Validated;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -32,6 +36,8 @@ public class XqListingCatalogService {
     @Resource
     private XqListingShopMapper shopMapper;
     @Resource
+    private XqListingCategoryMapper categoryMapper;
+    @Resource
     private XqCopyGenRuleMapper copyGenRuleMapper;
 
     public List<XqListingPlatformRespVO> listPlatforms() {
@@ -40,6 +46,33 @@ public class XqListingCatalogService {
 
     public List<XqListingShopRespVO> listShops(String platformId) {
         return BeanUtils.toBean(shopMapper.selectByPlatformId(platformId), XqListingShopRespVO.class);
+    }
+
+    /**
+     * 按平台返回上架分类树（原库 t_giga_listing_category）
+     */
+    public List<XqListingCategoryRespVO> listCategoryTree(String platformId) {
+        if (StrUtil.isBlank(platformId)) {
+            return List.of();
+        }
+        List<XqListingCategoryDO> rows = categoryMapper.selectEnabledByPlatformId(platformId);
+        Map<String, XqListingCategoryRespVO> nodeMap = new HashMap<>();
+        for (XqListingCategoryDO row : rows) {
+            XqListingCategoryRespVO node = BeanUtils.toBean(row, XqListingCategoryRespVO.class);
+            node.setChildren(new ArrayList<>());
+            nodeMap.put(row.getId(), node);
+        }
+        List<XqListingCategoryRespVO> roots = new ArrayList<>();
+        for (XqListingCategoryDO row : rows) {
+            XqListingCategoryRespVO node = nodeMap.get(row.getId());
+            String parentId = StrUtil.blankToDefault(row.getParentId(), "");
+            if (StrUtil.isBlank(parentId) || "0".equals(parentId) || !nodeMap.containsKey(parentId)) {
+                roots.add(node);
+            } else {
+                nodeMap.get(parentId).getChildren().add(node);
+            }
+        }
+        return roots;
     }
 
     public List<XqCopyGenRuleRespVO> listCopyRules() {

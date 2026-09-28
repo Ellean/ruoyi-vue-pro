@@ -64,6 +64,9 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (reqVO == null || CollUtil.isEmpty(reqVO.getItems())) {
             throw exception(XQ_DISPATCH_EMPTY);
         }
+        if (StrUtil.hasBlank(reqVO.getListingPlatformId(), reqVO.getListingShopId(), reqVO.getListingCategoryId())) {
+            throw exception(XQ_DISPATCH_LISTING_REQUIRED);
+        }
         List<XqWorkOrderDO> created = new ArrayList<>();
         for (XqWorkOrderDispatchReqVO.Item item : reqVO.getItems()) {
             String sku = StrUtil.trim(item.getSku());
@@ -87,6 +90,12 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
                     .gigaCategoryId(item.getGigaCategoryId())
                     .status(WORK_STATUS_DOING)
                     .assigneeUserId(userId)
+                    .listingPlatformId(reqVO.getListingPlatformId())
+                    .listingShopId(reqVO.getListingShopId())
+                    .listingCategoryId(reqVO.getListingCategoryId())
+                    .listingPlatformName(reqVO.getListingPlatformName())
+                    .listingShopName(reqVO.getListingShopName())
+                    .listingCategoryName(reqVO.getListingCategoryName())
                     .workflowPhase("copy")
                     .build();
             workOrderMapper.insert(order);

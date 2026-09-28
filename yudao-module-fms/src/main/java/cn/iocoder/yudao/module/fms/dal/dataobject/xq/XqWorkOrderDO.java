@@ -61,6 +61,14 @@ public class XqWorkOrderDO extends BaseDO {
     private String listingPlatformId;
     /** 上架店铺 ID（原库 t_giga_listing_shop） */
     private String listingShopId;
+    /** 上架分类 ID（原库 t_giga_listing_category） */
+    private String listingCategoryId;
+    /** 上架平台名（冗余，便于列表筛选展示） */
+    private String listingPlatformName;
+    /** 上架店铺名 */
+    private String listingShopName;
+    /** 上架分类名 */
+    private String listingCategoryName;
     /**
      * 工作流阶段：copy / image / list / done
      */
