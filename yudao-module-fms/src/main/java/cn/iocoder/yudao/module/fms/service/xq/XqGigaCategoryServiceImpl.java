@@ -13,17 +13,30 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 @Validated
 public class XqGigaCategoryServiceImpl implements XqGigaCategoryService {
 
+    private final AtomicReference<List<XqGigaSiteCategoryDO>> allRowsCache = new AtomicReference<>();
+
     @Resource
     private XqGigaSiteCategoryMapper categoryMapper;
 
+    private List<XqGigaSiteCategoryDO> loadAllRows() {
+        List<XqGigaSiteCategoryDO> cached = allRowsCache.get();
+        if (cached != null) {
+            return cached;
+        }
+        List<XqGigaSiteCategoryDO> rows = categoryMapper.selectAllOrdered();
+        allRowsCache.compareAndSet(null, rows);
+        return allRowsCache.get();
+    }
+
     @Override
     public List<XqGigaCategoryTreeRespVO> getTree() {
-        List<XqGigaSiteCategoryDO> rows = categoryMapper.selectAllOrdered();
+        List<XqGigaSiteCategoryDO> rows = loadAllRows();
         return buildTree(rows);
     }
 
@@ -37,7 +50,7 @@ public class XqGigaCategoryServiceImpl implements XqGigaCategoryService {
         if (gigaId == null) {
             return List.of();
         }
-        List<XqGigaSiteCategoryDO> rows = categoryMapper.selectAllOrdered();
+        List<XqGigaSiteCategoryDO> rows = loadAllRows();
         List<XqGigaSiteCategoryDO> selves = rows.stream()
                 .filter(r -> Objects.equals(r.getGigaId(), gigaId))
                 .toList();
