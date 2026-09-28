@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.fms.controller.admin.xq;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleSaveReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqListingCategoryRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqListingPlatformRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqListingShopRespVO;
 import cn.iocoder.yudao.module.fms.service.xq.XqListingCatalogService;
@@ -30,7 +31,7 @@ public class XqListingCatalogController {
 
     @GetMapping("/platforms")
     @Operation(summary = "上架平台列表（原库）")
-    @PreAuthorize("@ss.hasPermission('xq:copy-rule:query')")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:product:dispatch', 'xq:work-order:query')")
     public CommonResult<List<XqListingPlatformRespVO>> listPlatforms() {
         return success(listingCatalogService.listPlatforms());
     }
@@ -38,10 +39,19 @@ public class XqListingCatalogController {
     @GetMapping("/shops")
     @Operation(summary = "上架店铺列表（原库）")
     @Parameter(name = "platformId", description = "平台ID")
-    @PreAuthorize("@ss.hasPermission('xq:copy-rule:query')")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:product:dispatch', 'xq:work-order:query')")
     public CommonResult<List<XqListingShopRespVO>> listShops(
             @RequestParam(value = "platformId", required = false) String platformId) {
         return success(listingCatalogService.listShops(platformId));
+    }
+
+    @GetMapping("/categories")
+    @Operation(summary = "上架分类树（原库，按平台）")
+    @Parameter(name = "platformId", description = "平台ID", required = true)
+    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:product:dispatch', 'xq:work-order:query')")
+    public CommonResult<List<XqListingCategoryRespVO>> listCategories(
+            @RequestParam("platformId") String platformId) {
+        return success(listingCatalogService.listCategoryTree(platformId));
     }
 
     @GetMapping("/copy-rules")

@@ -28,6 +28,10 @@ public class XqWorkOrderRespVO {
     private Long imageUserId;
     private String listingPlatformId;
     private String listingShopId;
+    private String listingCategoryId;
+    private String listingPlatformName;
+    private String listingShopName;
+    private String listingCategoryName;
     private String workflowPhase;
     private LocalDateTime createTime;
 

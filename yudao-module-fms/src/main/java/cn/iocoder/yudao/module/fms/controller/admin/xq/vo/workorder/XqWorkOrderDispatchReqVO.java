@@ -12,6 +12,27 @@ import java.util.List;
 @Data
 public class XqWorkOrderDispatchReqVO {
 
+    @Schema(description = "上架平台 ID", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank(message = "请选择上架平台")
+    private String listingPlatformId;
+
+    @Schema(description = "上架店铺 ID", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank(message = "请选择上架店铺")
+    private String listingShopId;
+
+    @Schema(description = "上架分类 ID", requiredMode = Schema.RequiredMode.REQUIRED)
+    @NotBlank(message = "请选择平台分类")
+    private String listingCategoryId;
+
+    @Schema(description = "上架平台名")
+    private String listingPlatformName;
+
+    @Schema(description = "上架店铺名")
+    private String listingShopName;
+
+    @Schema(description = "上架分类名")
+    private String listingCategoryName;
+
     @Schema(description = "选中的产品列表", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotEmpty(message = "请先选择要下发的产品")
     @Valid

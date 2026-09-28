@@ -42,6 +42,15 @@ public class XqWorkOrderPageReqVO extends PageParam {
     @Schema(description = "工作流阶段 copy/image/list/done")
     private String workflowPhase;
 
+    @Schema(description = "上架平台 ID")
+    private String listingPlatformId;
+
+    @Schema(description = "上架店铺 ID")
+    private String listingShopId;
+
+    @Schema(description = "上架分类 ID")
+    private String listingCategoryId;
+
     @Schema(description = "认领人", hidden = true)
     private Long assigneeUserId;
 
