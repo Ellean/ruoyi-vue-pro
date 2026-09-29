@@ -1,0 +1,22 @@
+name: Sync Upstream master-jdk25
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天 UTC 0 点自动拉取上游（按需修改时间）
+  workflow_dispatch:       # 支持在 GitHub 页面手动点击触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # 必须赋予写权限，以便将代码推送到你的分支
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+
+      - name: Sync master-jdk25 via GitHub CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 使用 gh 命令行工具直接拉取上游的 master-jdk25 并更新到当前仓库的 master-jdk25
+          gh repo sync ${{ github.repository }} -b master-jdk25
