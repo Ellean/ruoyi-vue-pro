@@ -35,4 +35,10 @@ public interface XqWorkOrderService {
 
     Long completeWorkOrder(@Valid XqWorkOrderCompleteReqVO completeReqVO);
 
+    /** 关闭进行中任务并清理文案/美工进度（关闭后可同平台再下发） */
+    void closeWorkOrder(Long id);
+
+    /** 批量关闭并清理进度 */
+    int batchCloseWorkOrder(@Valid XqWorkOrderBatchIdsReqVO reqVO);
+
 }

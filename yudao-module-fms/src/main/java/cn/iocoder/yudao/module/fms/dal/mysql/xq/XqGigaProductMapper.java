@@ -27,4 +27,6 @@ public interface XqGigaProductMapper {
 
     XqGigaProductRow selectById(@Param("id") String id);
 
+    XqGigaProductRow selectBySku(@Param("sku") String sku);
+
 }

@@ -11,17 +11,22 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderC
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderDispatchReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqProductDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
+import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqGigaProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqWorkOrderMapper;
+import cn.hutool.json.JSONUtil;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.*;
@@ -32,11 +37,16 @@ import static cn.iocoder.yudao.module.fms.service.xq.XqSourceItemServiceImpl.WOR
 public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
     public static final int WORK_STATUS_DONE = 20;
+    public static final int WORK_STATUS_CLOSED = 30;
 
     @Resource
     private XqWorkOrderMapper workOrderMapper;
     @Resource
     private XqProductMapper productMapper;
+    @Resource
+    private XqCopyPipelineService copyPipelineService;
+    @Resource
+    private XqGigaProductMapper gigaProductMapper;
 
     @Override
     public PageResult<XqWorkOrderDO> getWorkOrderPage(XqWorkOrderPageReqVO pageReqVO) {
@@ -55,6 +65,30 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         update.setId(order.getId());
         update.setContentTitle(updateReqVO.getContentTitle());
         update.setContentSellingPoints(updateReqVO.getContentSellingPoints());
+        if (StrUtil.isNotBlank(updateReqVO.getCopyResultJson())) {
+            update.setCopyResultJson(updateReqVO.getCopyResultJson());
+        } else if (updateReqVO.getContentHighlight() != null
+                || updateReqVO.getContentTitle() != null
+                || updateReqVO.getContentSellingPoints() != null) {
+            // 合并突出内容到 copy_result_json，供右侧编辑区回显
+            cn.hutool.json.JSONObject json = StrUtil.isNotBlank(order.getCopyResultJson())
+                    ? JSONUtil.parseObj(order.getCopyResultJson())
+                    : JSONUtil.createObj();
+            if (updateReqVO.getContentTitle() != null) {
+                json.set("title", updateReqVO.getContentTitle());
+            }
+            if (updateReqVO.getContentSellingPoints() != null) {
+                json.set("sellingPoints", updateReqVO.getContentSellingPoints());
+            }
+            if (updateReqVO.getContentHighlight() != null) {
+                json.set("highlightStyle", updateReqVO.getContentHighlight());
+                json.set("description", updateReqVO.getContentHighlight());
+            }
+            update.setCopyResultJson(json.toString());
+        }
+        if (updateReqVO.getImagePromptJson() != null) {
+            update.setImagePromptJson(updateReqVO.getImagePromptJson());
+        }
         workOrderMapper.updateById(update);
     }
 
@@ -67,25 +101,60 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (StrUtil.hasBlank(reqVO.getListingPlatformId(), reqVO.getListingCategoryId())) {
             throw exception(XQ_DISPATCH_LISTING_REQUIRED);
         }
+        // 先校验：同 SKU + 同平台 已有进行中/已上架 → 硬拦截（不同平台可并行）
+        for (XqWorkOrderDispatchReqVO.Item item : reqVO.getItems()) {
+            String sku = StrUtil.trim(item.getSku());
+            if (StrUtil.isBlank(sku)) {
+                continue;
+            }
+            XqWorkOrderDO exists = workOrderMapper.selectActiveBySkuAndPlatform(
+                    sku, reqVO.getListingPlatformId());
+            if (exists != null) {
+                throw exception(XQ_WORK_ORDER_ALREADY_EXISTS, sku);
+            }
+        }
+
         List<XqWorkOrderDO> created = new ArrayList<>();
         for (XqWorkOrderDispatchReqVO.Item item : reqVO.getItems()) {
             String sku = StrUtil.trim(item.getSku());
             if (StrUtil.isBlank(sku)) {
                 continue;
             }
-            XqWorkOrderDO exists = workOrderMapper.selectDoingByExternalSku(sku);
-            if (exists != null) {
-                // 已在工作台进行中：跳过，不重复建单
-                created.add(exists);
-                continue;
-            }
             String title = StrUtil.blankToDefault(item.getTitle(), sku);
+            String coverUrl = item.getCoverUrl();
+            String sourceDescription = null;
+            String sourceImageUrls = null;
+            String gigaProductId = StrUtil.trim(item.getProductId());
+            XqGigaProductRow giga = null;
+            if (StrUtil.isNotBlank(gigaProductId)) {
+                giga = gigaProductMapper.selectById(gigaProductId);
+            }
+            if (giga == null) {
+                giga = gigaProductMapper.selectBySku(sku);
+            }
+            if (giga != null) {
+                gigaProductId = giga.getId();
+                sourceDescription = giga.getDescription();
+                List<String> urls = extractImageUrls(giga.getImageUrlsJson(), giga.getImageUrl());
+                if (!urls.isEmpty()) {
+                    sourceImageUrls = JSONUtil.toJsonStr(urls);
+                    if (StrUtil.isBlank(coverUrl)) {
+                        coverUrl = urls.get(0);
+                    }
+                }
+                if (StrUtil.isBlank(title)) {
+                    title = StrUtil.blankToDefault(giga.getName(), sku);
+                }
+            }
             XqWorkOrderDO order = XqWorkOrderDO.builder()
                     .no("WO" + IdUtil.getSnowflakeNextIdStr())
                     .sourceId(null)
+                    .gigaProductId(gigaProductId)
                     .externalSku(sku)
                     .title(title)
-                    .coverUrl(item.getCoverUrl())
+                    .coverUrl(coverUrl)
+                    .sourceDescription(sourceDescription)
+                    .sourceImageUrls(sourceImageUrls)
                     .categoryName(item.getCategoryName())
                     .gigaCategoryId(item.getGigaCategoryId())
                     .status(WORK_STATUS_DOING)
@@ -97,6 +166,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
                     .listingShopName(reqVO.getListingShopName())
                     .listingCategoryName(reqVO.getListingCategoryName())
                     .workflowPhase("copy")
+                    .rpaCopyStatus("idle")
                     .build();
             workOrderMapper.insert(order);
             created.add(order);
@@ -105,6 +175,41 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             throw exception(XQ_DISPATCH_EMPTY);
         }
         return created;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void closeWorkOrder(Long id) {
+        XqWorkOrderDO order = workOrderMapper.selectById(id);
+        if (order == null) {
+            throw exception(XQ_WORK_ORDER_NOT_EXISTS);
+        }
+        if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
+            throw exception(XQ_WORK_ORDER_CLOSE_INVALID);
+        }
+        // 关闭 + 清空文案/美工/生成图等进度，避免残留在「我的文案」
+        workOrderMapper.closeAndClearProgress(id);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int batchCloseWorkOrder(XqWorkOrderBatchIdsReqVO reqVO) {
+        if (reqVO == null || CollUtil.isEmpty(reqVO.getIds())) {
+            throw exception(XQ_DISPATCH_EMPTY);
+        }
+        int count = 0;
+        for (Long id : reqVO.getIds()) {
+            XqWorkOrderDO order = workOrderMapper.selectById(id);
+            if (order == null) {
+                continue;
+            }
+            if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
+                continue;
+            }
+            workOrderMapper.closeAndClearProgress(id);
+            count++;
+        }
+        return count;
     }
 
     @Override
@@ -127,25 +232,29 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
     private XqWorkOrderDO generateCopyInternal(Long id, Long claimUserId) {
         XqWorkOrderDO order = validateDoing(id);
-        String sku = order.getExternalSku();
-        String title = StrUtil.blankToDefault(order.getTitle(), sku);
-        XqWorkOrderDO update = new XqWorkOrderDO();
-        update.setId(order.getId());
-        update.setContentTitle(title + " | Premium Listing");
-        update.setContentSellingPoints(
-                "• Durable build for daily use\n"
-                        + "• Clean modern design, ready to list\n"
-                        + "• Item Code: " + sku + "\n"
-                        + "• Generated for marketplace copy (demo)");
-        update.setWorkflowPhase("image");
-        if (claimUserId != null) {
-            update.setCopyUserId(claimUserId);
-            if (order.getAssigneeUserId() == null) {
-                update.setAssigneeUserId(claimUserId);
+        // 主 API 只触发文案 RPA（规则→文案→识图→图提示词）；结果走回调落库
+        copyPipelineService.triggerCopyJob(order, claimUserId);
+        return workOrderMapper.selectById(id);
+    }
+
+    private static List<String> extractImageUrls(String imageUrlsJson, String cover) {
+        Set<String> set = new LinkedHashSet<>();
+        if (StrUtil.isNotBlank(cover)) {
+            set.add(cover.trim());
+        }
+        if (StrUtil.isNotBlank(imageUrlsJson) && !"null".equalsIgnoreCase(imageUrlsJson)) {
+            try {
+                for (Object o : JSONUtil.parseArray(imageUrlsJson)) {
+                    String url = StrUtil.trim(String.valueOf(o));
+                    if (StrUtil.isNotBlank(url) && !"null".equalsIgnoreCase(url)) {
+                        set.add(url);
+                    }
+                }
+            } catch (Exception ignored) {
+                // ignore
             }
         }
-        workOrderMapper.updateById(update);
-        return workOrderMapper.selectById(id);
+        return new ArrayList<>(set);
     }
 
     @Override

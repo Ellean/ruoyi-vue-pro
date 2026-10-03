@@ -29,12 +29,18 @@ public class XqWorkOrderDO extends BaseDO {
     private String no;
     /** 货源 ID（选品库下发可为空） */
     private Long sourceId;
+    /** Giga 产品 list id */
+    private String gigaProductId;
     /** 外部 SKU / Item Code */
     private String externalSku;
     /** 货源/选品标题 */
     private String title;
     /** 选品封面 */
     private String coverUrl;
+    /** Giga 原文案/描述 */
+    private String sourceDescription;
+    /** 原图 URL JSON 数组 */
+    private String sourceImageUrls;
     /** 分类名 */
     private String categoryName;
     /** Giga 类目 id */
@@ -45,6 +51,10 @@ public class XqWorkOrderDO extends BaseDO {
     private String contentTitle;
     /** 卖点 */
     private String contentSellingPoints;
+    /** 生成文案结构 JSON */
+    private String copyResultJson;
+    /** 图片提示词条目 JSON */
+    private String imagePromptJson;
     /** 生成图 URL（演示） */
     private String generatedImageUrl;
     /** 入库后的品库 ID */
@@ -70,8 +80,14 @@ public class XqWorkOrderDO extends BaseDO {
     /** 上架分类名 */
     private String listingCategoryName;
     /**
-     * 工作流阶段：copy / image / list / done
+     * 工作流阶段：copy / image / list / done / closed
      */
     private String workflowPhase;
+    /** 文案 RPA workUuid */
+    private String rpaCopyWorkUuid;
+    /** idle/queued/running/success/fail */
+    private String rpaCopyStatus;
+    /** 文案 RPA 失败原因 */
+    private String rpaCopyError;
 
 }

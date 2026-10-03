@@ -300,3 +300,17 @@ justauth:
     type: REDIS
     prefix: 'social_auth_state:' # 缓存前缀，目前只对 Redis 缓存生效，默认 JUSTAUTH::STATE::
     timeout: 24h # 超时时长，目前只对 Redis 缓存生效，默认 3 分钟
+
+--- #################### XQ RPA / AI ####################
+xq:
+  rpa:
+    # RPA ?????? RPA ??????????
+    callback-base-url: http://127.0.0.1:48080/admin-api
+    callback-token: xq-rpa-callback
+  ai:
+    # ???? spring.ai.openai.*?????? sk-xxxx ??? mock
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+    api-key: ${OPENAI_API_KEY:}
+    model: gpt-4o-mini
+    timeout-ms: 180000
+    mock-when-empty: true

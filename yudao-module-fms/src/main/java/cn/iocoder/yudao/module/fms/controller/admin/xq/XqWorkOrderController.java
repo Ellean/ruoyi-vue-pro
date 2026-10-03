@@ -9,13 +9,16 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderC
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderDispatchReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyCallbackReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
+import cn.iocoder.yudao.module.fms.service.xq.XqCopyPipelineService;
 import cn.iocoder.yudao.module.fms.service.xq.XqWorkOrderService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
+import jakarta.annotation.security.PermitAll;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
@@ -34,6 +37,8 @@ public class XqWorkOrderController {
 
     @Resource
     private XqWorkOrderService workOrderService;
+    @Resource
+    private XqCopyPipelineService copyPipelineService;
 
     @GetMapping("/page")
     @Operation(summary = "工作台任务分页")
@@ -68,7 +73,7 @@ public class XqWorkOrderController {
     }
 
     @PostMapping("/generate-copy")
-    @Operation(summary = "生成文案（演示）")
+    @Operation(summary = "触发生成文案 RPA（规则→文案→图提示词）")
     @Parameter(name = "id", description = "任务编号", required = true)
     @PreAuthorize("@ss.hasPermission('xq:work-order:gen-copy')")
     public CommonResult<XqWorkOrderRespVO> generateCopy(@RequestParam("id") Long id) {
@@ -76,12 +81,20 @@ public class XqWorkOrderController {
     }
 
     @PostMapping("/batch-generate-copy")
-    @Operation(summary = "批量生成文案并领取")
+    @Operation(summary = "批量触发文案 RPA 并领取")
     @PreAuthorize("@ss.hasPermission('xq:work-order:batch-copy')")
     public CommonResult<List<XqWorkOrderRespVO>> batchGenerateCopy(
             @Valid @RequestBody XqWorkOrderBatchIdsReqVO reqVO) {
         List<XqWorkOrderDO> list = workOrderService.batchGenerateCopy(reqVO, getLoginUserId());
         return success(BeanUtils.toBean(list, XqWorkOrderRespVO.class));
+    }
+
+    @PostMapping("/rpa-copy-callback")
+    @Operation(summary = "文案 RPA 回调（写回文案与图片提示词）")
+    @PermitAll
+    public CommonResult<Boolean> rpaCopyCallback(@Valid @RequestBody XqWorkOrderRpaCopyCallbackReqVO reqVO) {
+        copyPipelineService.handleCallback(reqVO);
+        return success(true);
     }
 
     @PostMapping("/batch-assign-image")
@@ -104,6 +117,22 @@ public class XqWorkOrderController {
     @PreAuthorize("@ss.hasPermission('xq:work-order:complete')")
     public CommonResult<Long> completeWorkOrder(@Valid @RequestBody XqWorkOrderCompleteReqVO completeReqVO) {
         return success(workOrderService.completeWorkOrder(completeReqVO));
+    }
+
+    @PostMapping("/close")
+    @Operation(summary = "关闭进行中任务并清理进度（文案/美工/生成图）")
+    @Parameter(name = "id", description = "任务编号", required = true)
+    @PreAuthorize("@ss.hasPermission('xq:work-order:close')")
+    public CommonResult<Boolean> closeWorkOrder(@RequestParam("id") Long id) {
+        workOrderService.closeWorkOrder(id);
+        return success(true);
+    }
+
+    @PostMapping("/batch-close")
+    @Operation(summary = "批量关闭并清理进度")
+    @PreAuthorize("@ss.hasPermission('xq:work-order:close')")
+    public CommonResult<Integer> batchCloseWorkOrder(@Valid @RequestBody XqWorkOrderBatchIdsReqVO reqVO) {
+        return success(workOrderService.batchCloseWorkOrder(reqVO));
     }
 
 }

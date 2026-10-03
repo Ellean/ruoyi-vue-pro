@@ -12,14 +12,19 @@ public class XqWorkOrderRespVO {
     private Long id;
     private String no;
     private Long sourceId;
+    private String gigaProductId;
     private String externalSku;
     private String title;
     private String coverUrl;
+    private String sourceDescription;
+    private String sourceImageUrls;
     private String categoryName;
     private Long gigaCategoryId;
     private Integer status;
     private String contentTitle;
     private String contentSellingPoints;
+    private String copyResultJson;
+    private String imagePromptJson;
     private String generatedImageUrl;
     private Long productId;
     private String productSku;
@@ -33,6 +38,9 @@ public class XqWorkOrderRespVO {
     private String listingShopName;
     private String listingCategoryName;
     private String workflowPhase;
+    private String rpaCopyWorkUuid;
+    private String rpaCopyStatus;
+    private String rpaCopyError;
     private LocalDateTime createTime;
 
 }

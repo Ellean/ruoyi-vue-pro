@@ -39,6 +39,9 @@ public class XqWorkOrderDispatchReqVO {
 
     @Data
     public static class Item {
+        @Schema(description = "Giga 产品 list id（用于拉取原文案/原图）")
+        private String productId;
+
         @Schema(description = "SKU / Item Code", requiredMode = Schema.RequiredMode.REQUIRED)
         @NotBlank(message = "SKU 不能为空")
         private String sku;

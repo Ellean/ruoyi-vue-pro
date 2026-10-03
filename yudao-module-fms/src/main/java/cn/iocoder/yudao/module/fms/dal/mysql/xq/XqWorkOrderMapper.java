@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
 
 @Mapper
@@ -43,6 +44,41 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eq(XqWorkOrderDO::getExternalSku, externalSku)
                 .eq(XqWorkOrderDO::getStatus, 10)
                 .last("LIMIT 1"));
+    }
+
+    /**
+     * 同 SKU + 同平台：进行中(10) 或已上架(20) 的任务（关闭后可再下发）
+     */
+    default XqWorkOrderDO selectActiveBySkuAndPlatform(String externalSku, String listingPlatformId) {
+        return selectOne(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getExternalSku, externalSku)
+                .eq(XqWorkOrderDO::getListingPlatformId, listingPlatformId)
+                .in(XqWorkOrderDO::getStatus, 10, 20)
+                .last("LIMIT 1"));
+    }
+
+    /**
+     * 关闭并清理进度：文案/图片/领取人/美工一并清空，避免仍出现在「我的文案」等池子
+     */
+    default void closeAndClearProgress(Long id) {
+        update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getId, id)
+                .eq(XqWorkOrderDO::getStatus, 10)
+                .set(XqWorkOrderDO::getStatus, 30)
+                .set(XqWorkOrderDO::getWorkflowPhase, "closed")
+                .set(XqWorkOrderDO::getContentTitle, null)
+                .set(XqWorkOrderDO::getContentSellingPoints, null)
+                .set(XqWorkOrderDO::getCopyResultJson, null)
+                .set(XqWorkOrderDO::getImagePromptJson, null)
+                .set(XqWorkOrderDO::getGeneratedImageUrl, null)
+                .set(XqWorkOrderDO::getCopyUserId, null)
+                .set(XqWorkOrderDO::getImageUserId, null)
+                .set(XqWorkOrderDO::getAssigneeUserId, null)
+                .set(XqWorkOrderDO::getProductId, null)
+                .set(XqWorkOrderDO::getProductSku, null)
+                .set(XqWorkOrderDO::getRpaCopyWorkUuid, null)
+                .set(XqWorkOrderDO::getRpaCopyStatus, null)
+                .set(XqWorkOrderDO::getRpaCopyError, null));
     }
 
 }

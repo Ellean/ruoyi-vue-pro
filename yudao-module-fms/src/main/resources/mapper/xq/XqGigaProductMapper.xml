@@ -308,4 +308,42 @@
         LIMIT 1
     </select>
 
+    <select id="selectBySku" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
+        SELECT
+        <include refid="DetailColumns"/>
+        FROM t_gigab2b_product_list l
+        INNER JOIN (
+          SELECT id, sku, product_name, sync_time,
+                 price, exclusive_price, discounted_price, currency,
+                 seller_available_inventory, buyer_available_inventory, sku_available,
+                 detail_json, price_json, inventory_json
+          FROM (
+            SELECT s1.id, s1.sku, s1.product_name, s1.sync_time,
+                   s1.price, s1.exclusive_price, s1.discounted_price, s1.currency,
+                   s1.seller_available_inventory, s1.buyer_available_inventory, s1.sku_available,
+                   s1.detail_json, s1.price_json, s1.inventory_json,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY s1.sku
+                     ORDER BY
+                       (CASE
+                          WHEN IFNULL(s1.price,0) &gt; 0
+                            OR IFNULL(s1.discounted_price,0) &gt; 0
+                            OR IFNULL(s1.exclusive_price,0) &gt; 0 THEN 2
+                          WHEN s1.price_json IS NOT NULL
+                            AND s1.price_json NOT IN ('', '{}', 'null') THEN 1
+                          ELSE 0
+                        END) DESC,
+                       s1.sync_time DESC,
+                       s1.id DESC
+                   ) AS rn
+            FROM t_gigab2b_product_snapshot s1
+            WHERE s1.sku = #{sku}
+          ) sx
+          WHERE sx.rn = 1
+        ) s ON s.sku = l.sku
+        WHERE l.sku = #{sku}
+        ORDER BY l.sync_time DESC, l.id DESC
+        LIMIT 1
+    </select>
+
 </mapper>
