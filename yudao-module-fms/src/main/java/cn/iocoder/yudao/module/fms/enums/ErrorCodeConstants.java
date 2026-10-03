@@ -204,5 +204,6 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_RPA_GLOBAL_NOT_CONFIGURED = new ErrorCode(1_052_200_033, "管理员尚未配置控制中枢密钥");
     ErrorCode XQ_GIGA_CREDENTIAL_NOT_EXISTS = new ErrorCode(1_052_200_040, "产品库凭证不存在");
     ErrorCode XQ_GIGA_CREDENTIAL_SECRET_REQUIRED = new ErrorCode(1_052_200_041, "请填写 Client Secret");
+    ErrorCode XQ_GIGA_CREDENTIAL_PRICE_ROLE_INVALID = new ErrorCode(1_052_200_042, "价格角色须为 pickup(自提) 或 dropship(一键代发)");
 
 }

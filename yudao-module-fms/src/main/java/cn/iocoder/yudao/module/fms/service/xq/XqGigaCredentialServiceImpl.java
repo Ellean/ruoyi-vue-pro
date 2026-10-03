@@ -13,9 +13,11 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
+import java.util.Locale;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.XQ_GIGA_CREDENTIAL_NOT_EXISTS;
+import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.XQ_GIGA_CREDENTIAL_PRICE_ROLE_INVALID;
 import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.XQ_GIGA_CREDENTIAL_SECRET_REQUIRED;
 
 @Service
@@ -40,20 +42,28 @@ public class XqGigaCredentialServiceImpl implements XqGigaCredentialService {
         if (create && StrUtil.isBlank(secret)) {
             throw exception(XQ_GIGA_CREDENTIAL_SECRET_REQUIRED);
         }
+        String priceRole = normalizePriceRole(reqVO.getPriceRole());
+        String vendorCode = StrUtil.trim(reqVO.getVendorCode());
+        String dedupe = normalizeDedupe(reqVO.getSyncDedupeMode());
         if (Boolean.TRUE.equals(reqVO.getIsDefault())) {
-            credentialMapper.clearDefault();
+            credentialMapper.clearDefault(vendorCode, priceRole);
         }
         if (create) {
             XqGigaApiCredentialDO row = XqGigaApiCredentialDO.builder()
                     .name(reqVO.getName().trim())
+                    .vendorCode(StrUtil.blankToDefault(vendorCode, null))
+                    .vendorName(trimOrNull(reqVO.getVendorName()))
                     .clientId(reqVO.getClientId().trim())
                     .clientSecretEnc(secretCrypto.encrypt(secret))
                     .clientSecretMask(XqSecretCrypto.mask(secret))
                     .sandbox(Boolean.TRUE.equals(reqVO.getSandbox()))
-                    .baseUrl(StrUtil.trim(reqVO.getBaseUrl()))
+                    .baseUrl(trimOrNull(reqVO.getBaseUrl()))
+                    .priceRole(priceRole)
+                    .enableScheduledSync(Boolean.TRUE.equals(reqVO.getEnableScheduledSync()))
+                    .syncDedupeMode(dedupe)
                     .isDefault(Boolean.TRUE.equals(reqVO.getIsDefault()))
                     .enabled(reqVO.getEnabled() == null || reqVO.getEnabled())
-                    .remark(StrUtil.trim(reqVO.getRemark()))
+                    .remark(trimOrNull(reqVO.getRemark()))
                     .build();
             credentialMapper.insert(row);
             return row.getId();
@@ -65,16 +75,21 @@ public class XqGigaCredentialServiceImpl implements XqGigaCredentialService {
         XqGigaApiCredentialDO update = new XqGigaApiCredentialDO();
         update.setId(existing.getId());
         update.setName(reqVO.getName().trim());
+        update.setVendorCode(StrUtil.blankToDefault(vendorCode, null));
+        update.setVendorName(trimOrNull(reqVO.getVendorName()));
         update.setClientId(reqVO.getClientId().trim());
         if (StrUtil.isNotBlank(secret)) {
             update.setClientSecretEnc(secretCrypto.encrypt(secret));
             update.setClientSecretMask(XqSecretCrypto.mask(secret));
         }
         update.setSandbox(Boolean.TRUE.equals(reqVO.getSandbox()));
-        update.setBaseUrl(StrUtil.trim(reqVO.getBaseUrl()));
+        update.setBaseUrl(trimOrNull(reqVO.getBaseUrl()));
+        update.setPriceRole(priceRole);
+        update.setEnableScheduledSync(Boolean.TRUE.equals(reqVO.getEnableScheduledSync()));
+        update.setSyncDedupeMode(dedupe);
         update.setIsDefault(Boolean.TRUE.equals(reqVO.getIsDefault()));
         update.setEnabled(reqVO.getEnabled() == null || reqVO.getEnabled());
-        update.setRemark(StrUtil.trim(reqVO.getRemark()));
+        update.setRemark(trimOrNull(reqVO.getRemark()));
         credentialMapper.updateById(update);
         return existing.getId();
     }
@@ -94,7 +109,7 @@ public class XqGigaCredentialServiceImpl implements XqGigaCredentialService {
         if (existing == null) {
             throw exception(XQ_GIGA_CREDENTIAL_NOT_EXISTS);
         }
-        credentialMapper.clearDefault();
+        credentialMapper.clearDefault(existing.getVendorCode(), existing.getPriceRole());
         XqGigaApiCredentialDO update = new XqGigaApiCredentialDO();
         update.setId(id);
         update.setIsDefault(true);
@@ -112,12 +127,32 @@ public class XqGigaCredentialServiceImpl implements XqGigaCredentialService {
         if (row == null) {
             return null;
         }
-        // 解密结果暂存到 remark 不安全；调用方应使用 decrypt API
-        // 这里返回 DO，额外把明文放在 clientSecretMask 临时覆盖不合适
-        // 提供 getPlainSecret 方法更好 — 见下方通过重新设 enc 旁路
         String plain = secretCrypto.decrypt(row.getClientSecretEnc());
-        row.setClientSecretEnc(plain); // 调用约定：返回时 enc 字段为明文，仅内部使用
+        row.setClientSecretEnc(plain);
         return row;
+    }
+
+    private static String normalizePriceRole(String raw) {
+        String role = StrUtil.blankToDefault(raw, "").trim().toLowerCase(Locale.ROOT);
+        if (XqGigaApiCredentialDO.PRICE_ROLE_PICKUP.equals(role)
+                || XqGigaApiCredentialDO.PRICE_ROLE_DROPSHIP.equals(role)) {
+            return role;
+        }
+        throw exception(XQ_GIGA_CREDENTIAL_PRICE_ROLE_INVALID);
+    }
+
+    private static String normalizeDedupe(String raw) {
+        String mode = StrUtil.blankToDefault(raw, XqGigaApiCredentialDO.SYNC_DEDUPE_SKIP)
+                .trim().toLowerCase(Locale.ROOT);
+        if (XqGigaApiCredentialDO.SYNC_DEDUPE_REFRESH.equals(mode)) {
+            return mode;
+        }
+        return XqGigaApiCredentialDO.SYNC_DEDUPE_SKIP;
+    }
+
+    private static String trimOrNull(String value) {
+        String v = StrUtil.trim(value);
+        return StrUtil.isBlank(v) ? null : v;
     }
 
 }

@@ -25,12 +25,17 @@ ON DUPLICATE KEY UPDATE `id` = `id`;
 CREATE TABLE IF NOT EXISTS `xq_giga_api_credential` (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',
   `name` varchar(128) NOT NULL COMMENT '凭证名称',
+  `vendor_code` varchar(64) DEFAULT NULL COMMENT '商家/账号编码（多家分组）',
+  `vendor_name` varchar(128) DEFAULT NULL COMMENT '商家展示名',
   `client_id` varchar(128) NOT NULL COMMENT 'Giga Client ID',
   `client_secret_enc` varchar(1024) NOT NULL COMMENT 'Giga Client Secret（加密）',
   `client_secret_mask` varchar(64) DEFAULT NULL COMMENT 'Secret 掩码展示',
   `sandbox` bit(1) NOT NULL DEFAULT b'0' COMMENT '是否沙箱',
+  `price_role` varchar(16) NOT NULL DEFAULT 'dropship' COMMENT 'pickup自提 / dropship一键代发',
+  `enable_scheduled_sync` bit(1) NOT NULL DEFAULT b'0' COMMENT '是否用于定时拉取选品库',
+  `sync_dedupe_mode` varchar(32) NOT NULL DEFAULT 'skip_if_exists' COMMENT 'skip_if_exists / always_refresh',
   `base_url` varchar(255) DEFAULT NULL COMMENT '自定义 API，空用官方默认',
-  `is_default` bit(1) NOT NULL DEFAULT b'0' COMMENT '是否默认凭证',
+  `is_default` bit(1) NOT NULL DEFAULT b'0' COMMENT '同商家+价格角色下默认凭证',
   `enabled` bit(1) NOT NULL DEFAULT b'1' COMMENT '是否启用',
   `remark` varchar(255) DEFAULT NULL COMMENT '备注',
   `creator` varchar(64) DEFAULT '' COMMENT '创建者',
@@ -39,7 +44,9 @@ CREATE TABLE IF NOT EXISTS `xq_giga_api_credential` (
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   `deleted` bit(1) NOT NULL DEFAULT b'0' COMMENT '是否删除',
   PRIMARY KEY (`id`),
-  KEY `idx_xq_giga_cred_default` (`is_default`, `enabled`)
+  KEY `idx_xq_giga_cred_default` (`is_default`, `enabled`),
+  KEY `idx_xq_giga_cred_vendor_role` (`vendor_code`, `price_role`, `enabled`),
+  KEY `idx_xq_giga_cred_sync` (`enable_scheduled_sync`, `enabled`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产品库 Giga OpenAPI 凭证池（管理员）';
 
 -- 3) 系统管理 → 集成密钥

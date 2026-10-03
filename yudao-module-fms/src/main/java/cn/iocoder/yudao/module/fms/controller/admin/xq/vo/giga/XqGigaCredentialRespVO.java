@@ -8,10 +8,17 @@ import java.time.LocalDateTime;
 public class XqGigaCredentialRespVO {
     private Long id;
     private String name;
+    private String vendorCode;
+    private String vendorName;
     private String clientId;
     private String clientSecretMask;
     private Boolean sandbox;
     private String baseUrl;
+    /** pickup / dropship */
+    private String priceRole;
+    private Boolean enableScheduledSync;
+    /** skip_if_exists / always_refresh */
+    private String syncDedupeMode;
     private Boolean isDefault;
     private Boolean enabled;
     private String remark;
