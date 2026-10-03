@@ -1,9 +1,10 @@
 -- 工作台菜单：图片管理（在 ruoyi-vue-pro 库执行）
+-- 依赖：配置目录 12828（xq-config-menu-group.sql / xq-copy-workflow.sql）
 INSERT INTO `system_menu`
 (`id`,`name`,`permission`,`type`,`sort`,`parent_id`,`path`,`icon`,`component`,`component_name`,
  `status`,`visible`,`keep_alive`,`always_show`,`creator`,`create_time`,`updater`,`update_time`,`deleted`)
 VALUES
-(12823,'图片管理','xq:image-rule:query',2,5,12810,'image-rule','lucide:image','xq/product/image-rule/index','XqImageRule',
+(12823,'图片管理','xq:image-rule:query',2,2,12828,'image-rule','lucide:image','xq/product/image-rule/index','XqImageRule',
  0,b'1',b'1',b'1','1',NOW(),'1',NOW(),b'0'),
 (12824,'保存图片规则','xq:image-rule:update',3,1,12823,'','','',NULL,
  0,b'1',b'1',b'1','1',NOW(),'1',NOW(),b'0')

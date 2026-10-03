@@ -198,5 +198,11 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_WORK_ORDER_COPY_REQUIRED = new ErrorCode(1_052_200_024, "请先完成文案，再生成图片");
     ErrorCode XQ_WORK_ORDER_IMAGE_REQUIRED = new ErrorCode(1_052_200_025, "请先完成图片，再上架");
     ErrorCode XQ_DISPATCH_LISTING_REQUIRED = new ErrorCode(1_052_200_026, "请先选择上架平台与平台分类");
+    ErrorCode XQ_RPA_CONFIG_NOT_EXISTS = new ErrorCode(1_052_200_030, "请先保存 RPA 配置");
+    ErrorCode XQ_RPA_CONFIG_INVALID = new ErrorCode(1_052_200_031, "RPA 配置不完整：检查 API 地址、密钥和任务 UUID");
+    ErrorCode XQ_RPA_TRIGGER_FAIL = new ErrorCode(1_052_200_032, "触发 RPA 失败：{}");
+    ErrorCode XQ_RPA_GLOBAL_NOT_CONFIGURED = new ErrorCode(1_052_200_033, "管理员尚未配置控制中枢密钥");
+    ErrorCode XQ_GIGA_CREDENTIAL_NOT_EXISTS = new ErrorCode(1_052_200_040, "产品库凭证不存在");
+    ErrorCode XQ_GIGA_CREDENTIAL_SECRET_REQUIRED = new ErrorCode(1_052_200_041, "请填写 Client Secret");
 
 }

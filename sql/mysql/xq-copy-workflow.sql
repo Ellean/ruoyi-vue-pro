@@ -17,6 +17,18 @@ ALTER TABLE `xq_work_order`
 ALTER TABLE `xq_work_order`
   ADD COLUMN `workflow_phase` varchar(16) NOT NULL DEFAULT 'copy' COMMENT 'copy/image/list/done' AFTER `listing_shop_id`;
 
+-- 配置目录（文案/图片/RPA 管理页挂这里；完整补丁见 xq-config-menu-group.sql）
+INSERT INTO `system_menu`
+(`id`,`name`,`permission`,`type`,`sort`,`parent_id`,`path`,`icon`,`component`,`component_name`,
+ `status`,`visible`,`keep_alive`,`always_show`,`creator`,`create_time`,`updater`,`update_time`,`deleted`)
+VALUES
+(12828,'配置','',1,4,12810,'config','lucide:settings',NULL,NULL,
+ 0,b'1',b'1',b'1','1',NOW(),'1',NOW(),b'0')
+ON DUPLICATE KEY UPDATE
+  `name`=VALUES(`name`),
+  `parent_id`=VALUES(`parent_id`),
+  `path`=VALUES(`path`);
+
 -- 文案子页 + 文案规则管理
 INSERT INTO `system_menu`
 (`id`,`name`,`permission`,`type`,`sort`,`parent_id`,`path`,`icon`,`component`,`component_name`,
@@ -28,7 +40,7 @@ VALUES
  0,b'1',b'1',b'1','1',NOW(),'1',NOW(),b'0'),
 (12820,'批量生成文案','xq:work-order:batch-copy',3,5,12813,'','','',NULL,
  0,b'1',b'1',b'1','1',NOW(),'1',NOW(),b'0'),
-(12821,'文案管理','xq:copy-rule:query',2,4,12810,'copy-rule','lucide:settings-2','xq/product/copy-rule/index','XqCopyRule',
+(12821,'文案管理','xq:copy-rule:query',2,1,12828,'copy-rule','lucide:settings-2','xq/product/copy-rule/index','XqCopyRule',
  0,b'1',b'1',b'1','1',NOW(),'1',NOW(),b'0'),
 (12822,'保存文案规则','xq:copy-rule:update',3,1,12821,'','','',NULL,
  0,b'1',b'1',b'1','1',NOW(),'1',NOW(),b'0')
