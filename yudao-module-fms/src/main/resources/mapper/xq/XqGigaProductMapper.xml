@@ -3,57 +3,81 @@
 <mapper namespace="cn.iocoder.yudao.module.fms.dal.mysql.xq.XqGigaProductMapper">
 
     <!--
-      性能要点：
-      1) BestList / BestSnapshot 只投影必要列，禁止 SELECT *
-      2) 排名不再扫 detail_json.imageUrls（改用列字段价/时间）
-      3) 列表分页：先对 BestList 做 LIMIT，再只 join 本页 SKU 的快照
+      性能要点（针对 /xq/product/page）：
+      1) 有快照的 SKU 仅 ~2k，分页/COUNT 从 snapshot 侧驱动，避免对 4 万 list 全表 GROUP_CONCAT
+      2) 分页/COUNT 禁止 WHERE detail_json IS NOT NULL：会逼 MySQL 读整列 LOB，COUNT 从 ~40ms 恶化到 ~800ms+
+      3) selectListByIds 只按本页 id/sku 取数，禁止再嵌套全表 BestList/BestSnapshot
       4) 列表不返回 HTML description / 全量 imageUrls JSON
     -->
 
-    <sql id="BestList">
+    <!-- 快照 SKU 集合（只扫 sku 索引，勿碰 detail_json） -->
+    <sql id="SnapshotSkus">
         (
-          SELECT l1.id, l1.sku, l1.product_name, l1.source_platform, l1.sync_time, l1.create_date
-          FROM t_gigab2b_product_list l1
-          INNER JOIN (
-            SELECT sku,
-                   SUBSTRING_INDEX(GROUP_CONCAT(id ORDER BY sync_time DESC, id DESC), ',', 1) AS best_id
-            FROM t_gigab2b_product_list
-            GROUP BY sku
-          ) lx ON lx.best_id = l1.id
-        )
-    </sql>
-
-    <!-- 排名仅用价/时间，避免对全表 detail_json 做 JSON_LENGTH -->
-    <sql id="BestSnapshotIds">
-        (
-          SELECT sku,
-                 SUBSTRING_INDEX(
-                   GROUP_CONCAT(id ORDER BY
-                     (CASE WHEN IFNULL(price,0) &gt; 0 OR IFNULL(discounted_price,0) &gt; 0 OR IFNULL(exclusive_price,0) &gt; 0 THEN 2
-                           WHEN price_json IS NOT NULL AND price_json NOT IN ('', '{}', 'null') THEN 1
-                           ELSE 0 END) DESC,
-                     sync_time DESC,
-                     id DESC
-                   ), ',', 1
-                 ) AS best_id
+          SELECT sku
           FROM t_gigab2b_product_snapshot
-          WHERE detail_json IS NOT NULL
           GROUP BY sku
         )
     </sql>
 
-    <sql id="BestSnapshot">
+    <!-- 仅在「有快照的 SKU」上取 list 最新行 -->
+    <sql id="BestListOnSnapshotSkus">
         (
-          SELECT s1.id, s1.sku, s1.product_name, s1.sync_time,
-                 s1.price, s1.exclusive_price, s1.discounted_price, s1.currency,
-                 s1.seller_available_inventory, s1.buyer_available_inventory, s1.sku_available,
-                 s1.detail_json, s1.price_json, s1.inventory_json
-          FROM t_gigab2b_product_snapshot s1
-          INNER JOIN <include refid="BestSnapshotIds"/> bx ON bx.best_id = s1.id
+          SELECT id, sku, product_name, source_platform, sync_time, create_date
+          FROM (
+            SELECT l.id, l.sku, l.product_name, l.source_platform, l.sync_time, l.create_date,
+                   ROW_NUMBER() OVER (PARTITION BY l.sku ORDER BY l.sync_time DESC, l.id DESC) AS rn
+            FROM t_gigab2b_product_list l
+            INNER JOIN <include refid="SnapshotSkus"/> bx ON bx.sku = l.sku
+            <where>
+              <if test="name != null and name != ''">
+                (
+                  l.sku LIKE CONCAT('%', #{name}, '%')
+                  OR l.product_name LIKE CONCAT('%', #{name}, '%')
+                )
+              </if>
+            </where>
+          ) ranked
+          WHERE ranked.rn = 1
         )
     </sql>
 
-    <!-- 列表字段：封面 + 数量，不拉 description / 全图 JSON -->
+    <!-- 仅对给定 SKU 取最优快照（供本页补字段） -->
+    <sql id="BestSnapshotForSkus">
+        (
+          SELECT id, sku, product_name, sync_time,
+                 price, exclusive_price, discounted_price, currency,
+                 seller_available_inventory, buyer_available_inventory, sku_available,
+                 detail_json, price_json, inventory_json
+          FROM (
+            SELECT s1.id, s1.sku, s1.product_name, s1.sync_time,
+                   s1.price, s1.exclusive_price, s1.discounted_price, s1.currency,
+                   s1.seller_available_inventory, s1.buyer_available_inventory, s1.sku_available,
+                   s1.detail_json, s1.price_json, s1.inventory_json,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY s1.sku
+                     ORDER BY
+                       (CASE
+                          WHEN IFNULL(s1.price,0) &gt; 0
+                            OR IFNULL(s1.discounted_price,0) &gt; 0
+                            OR IFNULL(s1.exclusive_price,0) &gt; 0 THEN 2
+                          WHEN s1.price_json IS NOT NULL
+                            AND s1.price_json NOT IN ('', '{}', 'null') THEN 1
+                          ELSE 0
+                        END) DESC,
+                       s1.sync_time DESC,
+                       s1.id DESC
+                   ) AS rn
+            FROM t_gigab2b_product_snapshot s1
+            WHERE s1.detail_json IS NOT NULL
+              AND s1.sku IN
+              <foreach collection="skus" item="sku" open="(" separator="," close=")">
+                  #{sku}
+              </foreach>
+          ) sx
+          WHERE sx.rn = 1
+        )
+    </sql>
+
     <sql id="ListColumns">
         l.id AS id,
         l.sku AS sku,
@@ -101,7 +125,6 @@
         CONCAT('Giga/', IFNULL(l.source_platform, 'giga')) AS remark
     </sql>
 
-    <!-- 详情：含文案与全图 -->
     <sql id="DetailColumns">
         l.id AS id,
         l.sku AS sku,
@@ -152,60 +175,96 @@
         CONCAT('Giga/', IFNULL(l.source_platform, 'giga')) AS remark
     </sql>
 
-    <sql id="ListNameFilter">
-        <if test="name != null and name != ''">
-            AND (
-              l.sku LIKE CONCAT('%', #{name}, '%')
-              OR l.product_name LIKE CONCAT('%', #{name}, '%')
-            )
-        </if>
-    </sql>
-
-    <!-- 轻量 COUNT：只统计 BestList ⋈ 有快照的 SKU，不做 JSON 投影 -->
+    <!-- 无筛选 COUNT：DISTINCT sku + EXISTS，避免 JOIN 放大与 LOB 扫描 -->
     <select id="selectPageCount" resultType="long">
-        SELECT COUNT(1)
-        FROM <include refid="BestList"/> l
-        INNER JOIN <include refid="BestSnapshotIds"/> bx ON bx.sku = l.sku
-        WHERE 1 = 1
-        <include refid="ListNameFilter"/>
-        <if test="categoryIds != null and categoryIds.size() &gt; 0">
-            AND EXISTS (
-              SELECT 1 FROM t_gigab2b_product_snapshot s2
-              WHERE s2.id = bx.best_id
-                AND CAST(JSON_UNQUOTE(JSON_EXTRACT(s2.detail_json, '$.categoryCode')) AS UNSIGNED) IN
-                <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">
-                    #{cid}
-                </foreach>
-            )
-        </if>
+        <choose>
+            <when test="(name == null or name == '') and (categoryIds == null or categoryIds.size() == 0)">
+                SELECT COUNT(DISTINCT s.sku)
+                FROM t_gigab2b_product_snapshot s
+                WHERE EXISTS (
+                  SELECT 1 FROM t_gigab2b_product_list l WHERE l.sku = s.sku
+                )
+            </when>
+            <otherwise>
+                SELECT COUNT(1)
+                FROM <include refid="BestListOnSnapshotSkus"/> l
+                WHERE 1 = 1
+                <if test="categoryIds != null and categoryIds.size() &gt; 0">
+                    AND EXISTS (
+                      SELECT 1
+                      FROM t_gigab2b_product_snapshot s2
+                      WHERE s2.sku = l.sku
+                        AND CAST(JSON_UNQUOTE(JSON_EXTRACT(s2.detail_json, '$.categoryCode')) AS UNSIGNED) IN
+                        <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">
+                            #{cid}
+                        </foreach>
+                      LIMIT 1
+                    )
+                </if>
+            </otherwise>
+        </choose>
     </select>
 
-    <!-- 先分页 list id（轻），再补快照字段 -->
     <select id="selectPageIds" resultType="string">
         SELECT l.id
-        FROM <include refid="BestList"/> l
-        INNER JOIN <include refid="BestSnapshotIds"/> bx ON bx.sku = l.sku
+        FROM <include refid="BestListOnSnapshotSkus"/> l
         WHERE 1 = 1
-        <include refid="ListNameFilter"/>
         <if test="categoryIds != null and categoryIds.size() &gt; 0">
             AND EXISTS (
-              SELECT 1 FROM t_gigab2b_product_snapshot s2
-              WHERE s2.id = bx.best_id
+              SELECT 1
+              FROM t_gigab2b_product_snapshot s2
+              WHERE s2.sku = l.sku
                 AND CAST(JSON_UNQUOTE(JSON_EXTRACT(s2.detail_json, '$.categoryCode')) AS UNSIGNED) IN
                 <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">
                     #{cid}
                 </foreach>
+              LIMIT 1
             )
         </if>
         ORDER BY COALESCE(l.sync_time, l.create_date) DESC, l.id DESC
         LIMIT #{offset}, #{limit}
     </select>
 
+    <!-- 只查本页 id；快照按本页 sku 取最优，不再全表聚合 -->
     <select id="selectListByIds" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
         SELECT
         <include refid="ListColumns"/>
-        FROM <include refid="BestList"/> l
-        INNER JOIN <include refid="BestSnapshot"/> s ON s.sku = l.sku
+        FROM t_gigab2b_product_list l
+        INNER JOIN (
+          SELECT id, sku, product_name, sync_time,
+                 price, exclusive_price, discounted_price, currency,
+                 seller_available_inventory, buyer_available_inventory, sku_available,
+                 detail_json, price_json, inventory_json
+          FROM (
+            SELECT s1.id, s1.sku, s1.product_name, s1.sync_time,
+                   s1.price, s1.exclusive_price, s1.discounted_price, s1.currency,
+                   s1.seller_available_inventory, s1.buyer_available_inventory, s1.sku_available,
+                   s1.detail_json, s1.price_json, s1.inventory_json,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY s1.sku
+                     ORDER BY
+                       (CASE
+                          WHEN IFNULL(s1.price,0) &gt; 0
+                            OR IFNULL(s1.discounted_price,0) &gt; 0
+                            OR IFNULL(s1.exclusive_price,0) &gt; 0 THEN 2
+                          WHEN s1.price_json IS NOT NULL
+                            AND s1.price_json NOT IN ('', '{}', 'null') THEN 1
+                          ELSE 0
+                        END) DESC,
+                       s1.sync_time DESC,
+                       s1.id DESC
+                   ) AS rn
+            FROM t_gigab2b_product_snapshot s1
+            WHERE s1.sku IN (
+                SELECT DISTINCT l0.sku FROM t_gigab2b_product_list l0
+                WHERE l0.id IN
+                <foreach collection="ids" item="id" open="(" separator="," close=")">
+                    #{id}
+                </foreach>
+              )
+          ) sx
+          WHERE sx.rn = 1
+        ) s ON s.sku = l.sku
         WHERE l.id IN
         <foreach collection="ids" item="id" open="(" separator="," close=")">
             #{id}
@@ -216,7 +275,35 @@
         SELECT
         <include refid="DetailColumns"/>
         FROM t_gigab2b_product_list l
-        INNER JOIN <include refid="BestSnapshot"/> s ON s.sku = l.sku
+        INNER JOIN (
+          SELECT id, sku, product_name, sync_time,
+                 price, exclusive_price, discounted_price, currency,
+                 seller_available_inventory, buyer_available_inventory, sku_available,
+                 detail_json, price_json, inventory_json
+          FROM (
+            SELECT s1.id, s1.sku, s1.product_name, s1.sync_time,
+                   s1.price, s1.exclusive_price, s1.discounted_price, s1.currency,
+                   s1.seller_available_inventory, s1.buyer_available_inventory, s1.sku_available,
+                   s1.detail_json, s1.price_json, s1.inventory_json,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY s1.sku
+                     ORDER BY
+                       (CASE
+                          WHEN IFNULL(s1.price,0) &gt; 0
+                            OR IFNULL(s1.discounted_price,0) &gt; 0
+                            OR IFNULL(s1.exclusive_price,0) &gt; 0 THEN 2
+                          WHEN s1.price_json IS NOT NULL
+                            AND s1.price_json NOT IN ('', '{}', 'null') THEN 1
+                          ELSE 0
+                        END) DESC,
+                       s1.sync_time DESC,
+                       s1.id DESC
+                   ) AS rn
+            FROM t_gigab2b_product_snapshot s1
+            WHERE s1.sku = (SELECT sku FROM t_gigab2b_product_list WHERE id = #{id} LIMIT 1)
+          ) sx
+          WHERE sx.rn = 1
+        ) s ON s.sku = l.sku
         WHERE l.id = #{id}
         LIMIT 1
     </select>

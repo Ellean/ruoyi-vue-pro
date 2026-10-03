@@ -25,6 +25,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.XQ_PRODUCT_NOT_EXISTS;
@@ -33,6 +35,11 @@ import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.XQ_PRODUCT_SK
 @Service
 @Validated
 public class XqProductServiceImpl implements XqProductService {
+
+    /** 无筛选 COUNT 短缓存，避免每次全表 distinct */
+    private static final long UNFILTERED_COUNT_TTL_MS = 60_000L;
+    private final AtomicReference<Long> unfilteredCountCache = new AtomicReference<>();
+    private final AtomicLong unfilteredCountCachedAt = new AtomicLong(0);
 
     @Resource
     private XqProductMapper productMapper;
@@ -84,7 +91,21 @@ public class XqProductServiceImpl implements XqProductService {
                 ? 20 : pageReqVO.getPageSize();
         long offset = (long) (pageNo - 1) * pageSize;
 
-        Long total = gigaProductMapper.selectPageCount(pageReqVO.getName(), categoryIds);
+        Long total;
+        boolean unfiltered = StrUtil.isBlank(pageReqVO.getName()) && CollUtil.isEmpty(categoryIds);
+        if (unfiltered) {
+            long now = System.currentTimeMillis();
+            Long cached = unfilteredCountCache.get();
+            if (cached != null && now - unfilteredCountCachedAt.get() < UNFILTERED_COUNT_TTL_MS) {
+                total = cached;
+            } else {
+                total = gigaProductMapper.selectPageCount(pageReqVO.getName(), categoryIds);
+                unfilteredCountCache.set(total);
+                unfilteredCountCachedAt.set(now);
+            }
+        } else {
+            total = gigaProductMapper.selectPageCount(pageReqVO.getName(), categoryIds);
+        }
         if (total == null || total <= 0) {
             return new PageResult<>(Collections.emptyList(), 0L);
         }
