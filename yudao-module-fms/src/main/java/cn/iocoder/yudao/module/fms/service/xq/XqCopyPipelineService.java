@@ -24,4 +24,10 @@ public interface XqCopyPipelineService {
     /** RPA 回调写回文案与图片提示词 */
     void handleCallback(XqWorkOrderRpaCopyCallbackReqVO reqVO);
 
+    /** 按登录人领取待跑文案（精简 SKU 列表） */
+    List<Map<String, Object>> pullCopyJobs(Long userId, Integer limit);
+
+    /** 按 SKU 补齐原文案/原图/规则后返回 RPA 任务包 */
+    Map<String, Object> buildCopyDetailBySku(Long userId, String sku);
+
 }

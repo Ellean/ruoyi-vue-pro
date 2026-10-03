@@ -10,6 +10,8 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderD
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyCallbackReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyPullReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyPullRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 import cn.iocoder.yudao.module.fms.service.xq.XqCopyPipelineService;
@@ -87,6 +89,27 @@ public class XqWorkOrderController {
             @Valid @RequestBody XqWorkOrderBatchIdsReqVO reqVO) {
         List<XqWorkOrderDO> list = workOrderService.batchGenerateCopy(reqVO, getLoginUserId());
         return success(BeanUtils.toBean(list, XqWorkOrderRespVO.class));
+    }
+
+    @PostMapping("/rpa-copy-pull")
+    @Operation(summary = "RPA：按当前登录人领取待跑文案 SKU")
+    @PreAuthorize("@ss.hasPermission('xq:work-order:query')")
+    public CommonResult<XqWorkOrderRpaCopyPullRespVO> rpaCopyPull(
+            @RequestBody(required = false) XqWorkOrderRpaCopyPullReqVO reqVO) {
+        Integer limit = reqVO == null ? null : reqVO.getLimit();
+        List<java.util.Map<String, Object>> jobs = copyPipelineService.pullCopyJobs(getLoginUserId(), limit);
+        XqWorkOrderRpaCopyPullRespVO resp = new XqWorkOrderRpaCopyPullRespVO();
+        resp.setJobs(jobs);
+        resp.setCount(jobs.size());
+        return success(resp);
+    }
+
+    @GetMapping("/rpa-copy-detail")
+    @Operation(summary = "RPA：按 SKU 拉文案详情（原文案/原图/规则）")
+    @Parameter(name = "sku", description = "Item Code / SKU", required = true)
+    @PreAuthorize("@ss.hasPermission('xq:work-order:query')")
+    public CommonResult<java.util.Map<String, Object>> rpaCopyDetail(@RequestParam("sku") String sku) {
+        return success(copyPipelineService.buildCopyDetailBySku(getLoginUserId(), sku));
     }
 
     @PostMapping("/rpa-copy-callback")

@@ -38,6 +38,35 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .orderByDesc(XqWorkOrderDO::getId));
     }
 
+    /** 当前登录人待跑文案：进行中、文案未完成、未在跑 */
+    default List<XqWorkOrderDO> selectPendingCopyJobs(Long userId, int limit) {
+        int n = Math.max(1, Math.min(limit, 20));
+        return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getStatus, 10)
+                .and(w -> w.isNull(XqWorkOrderDO::getContentTitle)
+                        .or()
+                        .eq(XqWorkOrderDO::getContentTitle, ""))
+                .and(w -> w.isNull(XqWorkOrderDO::getRpaCopyStatus)
+                        .or()
+                        .notIn(XqWorkOrderDO::getRpaCopyStatus, "success", "running"))
+                .and(w -> w.eq(XqWorkOrderDO::getCopyUserId, userId)
+                        .or()
+                        .isNull(XqWorkOrderDO::getCopyUserId))
+                .orderByAsc(XqWorkOrderDO::getId)
+                .last("LIMIT " + n));
+    }
+
+    default XqWorkOrderDO selectDoingCopyBySku(Long userId, String sku) {
+        return selectOne(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getExternalSku, sku)
+                .eq(XqWorkOrderDO::getStatus, 10)
+                .and(w -> w.eq(XqWorkOrderDO::getCopyUserId, userId)
+                        .or()
+                        .isNull(XqWorkOrderDO::getCopyUserId))
+                .orderByDesc(XqWorkOrderDO::getId)
+                .last("LIMIT 1"));
+    }
+
     /** 进行中的同 SKU 任务 */
     default XqWorkOrderDO selectDoingByExternalSku(String externalSku) {
         return selectOne(new LambdaQueryWrapperX<XqWorkOrderDO>()

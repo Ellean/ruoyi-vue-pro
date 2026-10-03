@@ -195,6 +195,46 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public List<Map<String, Object>> pullCopyJobs(Long userId, Integer limit) {
+        if (userId == null) {
+            throw exception(XQ_RPA_CONFIG_INVALID);
+        }
+        int n = limit == null ? 10 : limit;
+        List<XqWorkOrderDO> orders = workOrderMapper.selectPendingCopyJobs(userId, n);
+        List<Map<String, Object>> jobs = new ArrayList<>();
+        for (XqWorkOrderDO order : orders) {
+            workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+                    .eq(XqWorkOrderDO::getId, order.getId())
+                    .set(XqWorkOrderDO::getCopyUserId, userId)
+                    .set(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_RUNNING)
+                    .set(XqWorkOrderDO::getRpaCopyError, null)
+                    .set(XqWorkOrderDO::getWorkflowPhase, "copy")
+                    .set(XqWorkOrderDO::getAssigneeUserId,
+                            order.getAssigneeUserId() == null ? userId : order.getAssigneeUserId()));
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("workOrderId", order.getId());
+            row.put("sku", order.getExternalSku());
+            row.put("title", order.getTitle());
+            jobs.add(row);
+        }
+        return jobs;
+    }
+
+    @Override
+    public Map<String, Object> buildCopyDetailBySku(Long userId, String sku) {
+        if (userId == null || StrUtil.isBlank(sku)) {
+            throw exception(XQ_WORK_ORDER_NOT_EXISTS);
+        }
+        XqWorkOrderDO order = workOrderMapper.selectDoingCopyBySku(userId, sku.trim());
+        if (order == null) {
+            throw exception(XQ_WORK_ORDER_NOT_EXISTS);
+        }
+        enrichSourceIfNeeded(order);
+        return buildJobInput(order, userId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void handleCallback(XqWorkOrderRpaCopyCallbackReqVO reqVO) {
         if (reqVO == null || reqVO.getWorkOrderId() == null) {
             throw exception(XQ_WORK_ORDER_NOT_EXISTS);
