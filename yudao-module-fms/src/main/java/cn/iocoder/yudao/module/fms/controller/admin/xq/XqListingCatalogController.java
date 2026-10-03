@@ -22,7 +22,7 @@ import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
-@Tag(name = "管理后台 - 上架平台/店铺/文案规则（原库）")
+@Tag(name = "产品 - 上架平台/类目/文案规则")
 @RestController
 @RequestMapping("/xq/listing")
 @Validated

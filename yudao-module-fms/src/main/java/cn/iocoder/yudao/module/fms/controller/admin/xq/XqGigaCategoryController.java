@@ -18,7 +18,7 @@ import java.util.List;
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 import static cn.iocoder.yudao.framework.common.util.collection.CollectionUtils.convertList;
 
-@Tag(name = "管理后台 - Giga 官网类目")
+@Tag(name = "产品 - Giga 选品类目")
 @RestController
 @RequestMapping("/xq/category")
 @Validated

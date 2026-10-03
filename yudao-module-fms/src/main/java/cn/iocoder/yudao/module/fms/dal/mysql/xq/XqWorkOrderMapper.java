@@ -8,6 +8,8 @@ import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
 
+import java.util.List;
+
 @Mapper
 public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
 

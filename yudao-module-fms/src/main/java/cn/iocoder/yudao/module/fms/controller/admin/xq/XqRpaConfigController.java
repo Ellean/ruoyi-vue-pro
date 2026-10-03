@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.*;
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 import static cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils.getLoginUserId;
 
-@Tag(name = "管理后台 - 工作台 RPA 配置")
+@Tag(name = "产品 - 个人 RPA 配置")
 @RestController
 @RequestMapping("/xq/rpa-config")
 @Validated

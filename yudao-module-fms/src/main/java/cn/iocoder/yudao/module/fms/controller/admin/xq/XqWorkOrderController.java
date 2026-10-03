@@ -31,7 +31,7 @@ import java.util.List;
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 import static cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils.getLoginUserId;
 
-@Tag(name = "管理后台 - 工作台任务")
+@Tag(name = "产品 - 工作台任务")
 @RestController
 @RequestMapping("/xq/work-order")
 @Validated

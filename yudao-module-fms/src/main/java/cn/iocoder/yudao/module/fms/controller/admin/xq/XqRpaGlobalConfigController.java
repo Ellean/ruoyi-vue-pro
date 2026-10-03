@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.*;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
-@Tag(name = "管理后台 - 控制中枢全局密钥")
+@Tag(name = "产品 - 系统管理全局密钥")
 @RestController
 @RequestMapping("/xq/rpa-global")
 @Validated

@@ -17,7 +17,7 @@ import java.util.List;
 
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
-@Tag(name = "管理后台 - 产品库 Giga 凭证")
+@Tag(name = "产品 - 产品库 Giga 凭证")
 @RestController
 @RequestMapping("/xq/giga-credential")
 @Validated

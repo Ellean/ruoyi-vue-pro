@@ -24,7 +24,7 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
  * 文案 RPA AI：需后台登录（Authorization Bearer），callbackToken 仍校验。
  * 边界：主 API 提供 Chat 能力；RPA 编排规则→文案→识图→图提示词并回调落库。
  */
-@Tag(name = "管理后台 - XQ RPA AI")
+@Tag(name = "产品 - RPA AI")
 @RestController
 @RequestMapping("/xq/rpa/ai")
 @Validated
