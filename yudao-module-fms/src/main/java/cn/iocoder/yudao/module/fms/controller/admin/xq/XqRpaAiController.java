@@ -22,7 +22,7 @@ import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
 
 /**
  * 文案 RPA AI：需后台登录（Authorization Bearer），callbackToken 仍校验。
- * 边界：主 API 提供 Chat 能力；RPA 编排规则→文案→识图→图提示词并回调落库。
+ * 边界：主 API 只做文案 Chat + 下发 vision 配置；原图由 RPA 本机下载识图，不在服务端转二进制。
  */
 @Tag(name = "产品 - RPA AI")
 @RestController
@@ -39,8 +39,14 @@ public class XqRpaAiController {
         return success(rpaAiService.generateCopy(reqVO));
     }
 
+    @PostMapping("/vision-profile")
+    @Operation(summary = "RPA：下发对话模型地址，供本机下载原图后识图")
+    public CommonResult<Map<String, Object>> visionProfile(@RequestBody XqRpaAiClassifyImagesReqVO reqVO) {
+        return success(rpaAiService.getVisionProfile(reqVO == null ? null : reqVO.getCallbackToken()));
+    }
+
     @PostMapping("/classify-images")
-    @Operation(summary = "RPA：原图识图分型")
+    @Operation(summary = "RPA：无图兜底分型（正式识图在机器人本机）")
     public CommonResult<List<Map<String, Object>>> classifyImages(
             @Valid @RequestBody XqRpaAiClassifyImagesReqVO reqVO) {
         return success(rpaAiService.classifyImages(reqVO));

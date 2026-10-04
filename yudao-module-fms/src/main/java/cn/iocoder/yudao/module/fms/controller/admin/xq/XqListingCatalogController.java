@@ -32,15 +32,15 @@ public class XqListingCatalogController {
     private XqListingCatalogService listingCatalogService;
 
     @GetMapping("/platforms")
-    @Operation(summary = "上架平台列表（原库）")
+    @Operation(summary = "上架平台列表（主库 xq_platform，按用户绑店过滤）")
     @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:product:dispatch', 'xq:work-order:query')")
     public CommonResult<List<XqListingPlatformRespVO>> listPlatforms() {
         return success(listingCatalogService.listPlatforms());
     }
 
     @GetMapping("/shops")
-    @Operation(summary = "上架店铺列表（原库）")
-    @Parameter(name = "platformId", description = "平台ID")
+    @Operation(summary = "上架店铺列表（主库 xq_store，按 xq_user_store 过滤）")
+    @Parameter(name = "platformId", description = "业务平台ID（xq_platform.id）")
     @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:product:dispatch', 'xq:work-order:query')")
     public CommonResult<List<XqListingShopRespVO>> listShops(
             @RequestParam(value = "platformId", required = false) String platformId) {
@@ -48,8 +48,8 @@ public class XqListingCatalogController {
     }
 
     @GetMapping("/categories")
-    @Operation(summary = "上架分类树（原库，按平台）")
-    @Parameter(name = "platformId", description = "平台ID", required = true)
+    @Operation(summary = "上架分类树（按业务平台解析 sourcePlatformId 后查原库类目）")
+    @Parameter(name = "platformId", description = "业务平台ID（xq_platform.id）", required = true)
     @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:product:dispatch', 'xq:work-order:query')")
     public CommonResult<List<XqListingCategoryRespVO>> listCategories(
             @RequestParam("platformId") String platformId) {

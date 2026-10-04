@@ -17,8 +17,11 @@ import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqRpaUserConfigMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqWorkOrderMapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
 
@@ -38,6 +41,7 @@ import static cn.iocoder.yudao.module.fms.service.xq.XqSourceItemServiceImpl.WOR
  */
 @Service
 @Validated
+@Slf4j
 public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
 
     public static final String RPA_STATUS_QUEUED = "queued";
@@ -62,6 +66,9 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
     private XqRpaGlobalConfigService rpaGlobalConfigService;
     @Resource
     private XqCommanderClient commanderClient;
+    @Lazy
+    @Resource
+    private XqCopyPipelineServiceImpl self;
 
     @Override
     public Map<String, Object> buildJobInput(XqWorkOrderDO order, Long userId) {
@@ -118,14 +125,15 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         // 流水线步骤说明（给 RPA / 大模型 system 用）
         input.put("steps", List.of(
                 "1.load_copy_rule: 先加载文案规则作为硬约束（字数/卖点数/标点/平台规范）",
-                "2.generate_copy: 结合原文案+原图，优化标题/卖点/突出内容/长描述",
-                "3.classify_images: 识别每张图类型（主图/尺寸图/细节图/场景图/包装图等）并标记",
-                "4.generate_image_prompts: 按生成文案的卖点+突出内容+图类型写提示词；尺寸图须绑定产品原图+标注图"
+                "2.generate_copy: 结合原文案优化标题/卖点/突出内容/长描述（服务端不下载原图）",
+                "3.classify_images: RPA 本机下载 sourceImages 后识图分型",
+                "4.generate_image_prompts: RPA 按本地原图+卖点写提示词；尺寸图须绑定产品原图+标注图"
         ));
 
         String base = StrUtil.removeSuffix(StrUtil.blankToDefault(callbackBaseUrl, ""), "/");
         input.put("apiBaseUrl", base);
         input.put("aiGenerateCopyPath", "/xq/rpa/ai/generate-copy");
+        input.put("aiVisionProfilePath", "/xq/rpa/ai/vision-profile");
         input.put("aiClassifyImagesPath", "/xq/rpa/ai/classify-images");
         input.put("aiGenerateImagePromptsPath", "/xq/rpa/ai/generate-image-prompts");
         input.put("callbackUrl", base + "/xq/work-order/rpa-copy-callback");
@@ -134,7 +142,26 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    public void enqueueCopyJob(XqWorkOrderDO order, Long userId) {
+        if (order == null || order.getId() == null) {
+            throw exception(XQ_WORK_ORDER_NOT_EXISTS);
+        }
+        if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
+            throw exception(XQ_WORK_ORDER_STATUS_INVALID);
+        }
+        enrichSourceIfNeeded(order);
+        workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getId, order.getId())
+                .set(XqWorkOrderDO::getCopyUserId, userId)
+                .set(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_QUEUED)
+                .set(XqWorkOrderDO::getRpaCopyError, null)
+                .set(XqWorkOrderDO::getRpaCopyWorkUuid, null)
+                .set(XqWorkOrderDO::getWorkflowPhase, "copy")
+                .set(XqWorkOrderDO::getAssigneeUserId,
+                        order.getAssigneeUserId() == null ? userId : order.getAssigneeUserId()));
+    }
+
+    @Override
     public String triggerCopyJob(XqWorkOrderDO order, Long userId) {
         if (order == null || order.getId() == null) {
             throw exception(XQ_WORK_ORDER_NOT_EXISTS);
@@ -176,7 +203,6 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public List<XqWorkOrderDO> triggerBatch(List<Long> ids, Long userId) {
         if (CollUtil.isEmpty(ids)) {
             throw exception(XQ_DISPATCH_EMPTY);
@@ -203,6 +229,7 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         List<XqWorkOrderDO> orders = workOrderMapper.selectPendingCopyJobs(userId, n);
         List<Map<String, Object>> jobs = new ArrayList<>();
         for (XqWorkOrderDO order : orders) {
+            enrichSourceIfNeeded(order);
             workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
                     .eq(XqWorkOrderDO::getId, order.getId())
                     .set(XqWorkOrderDO::getCopyUserId, userId)
@@ -211,11 +238,7 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                     .set(XqWorkOrderDO::getWorkflowPhase, "copy")
                     .set(XqWorkOrderDO::getAssigneeUserId,
                             order.getAssigneeUserId() == null ? userId : order.getAssigneeUserId()));
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("workOrderId", order.getId());
-            row.put("sku", order.getExternalSku());
-            row.put("title", order.getTitle());
-            jobs.add(row);
+            jobs.add(buildJobInput(order, userId));
         }
         return jobs;
     }
@@ -313,13 +336,7 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (!needDesc && !needImages) {
             return;
         }
-        XqGigaProductRow row = null;
-        if (StrUtil.isNotBlank(order.getGigaProductId())) {
-            row = gigaProductMapper.selectById(order.getGigaProductId());
-        }
-        if (row == null && StrUtil.isNotBlank(order.getExternalSku())) {
-            row = gigaProductMapper.selectBySku(order.getExternalSku());
-        }
+        XqGigaProductRow row = self.readGigaProduct(order.getGigaProductId(), order.getExternalSku());
         if (row == null) {
             return;
         }
@@ -352,6 +369,26 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (changed) {
             workOrderMapper.update(null, uw);
         }
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public XqGigaProductRow readGigaProduct(String gigaProductId, String sku) {
+        try {
+            if (StrUtil.isNotBlank(gigaProductId)) {
+                XqGigaProductRow row = gigaProductMapper.selectById(gigaProductId);
+                if (row != null) {
+                    return row;
+                }
+            }
+            if (StrUtil.isNotBlank(sku)) {
+                return gigaProductMapper.selectBySku(sku);
+            }
+        } catch (Exception ex) {
+            log.warn("[readGigaProduct] 读取 Giga 产品失败 id={} sku={}: {}",
+                    gigaProductId, sku, ex.getMessage());
+        }
+        return null;
     }
 
     private static List<String> parseImageUrls(String json, String cover) {

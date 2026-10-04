@@ -208,5 +208,15 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_GIGA_CREDENTIAL_NOT_EXISTS = new ErrorCode(1_052_200_040, "产品库凭证不存在");
     ErrorCode XQ_GIGA_CREDENTIAL_SECRET_REQUIRED = new ErrorCode(1_052_200_041, "请填写 Client Secret");
     ErrorCode XQ_GIGA_CREDENTIAL_PRICE_ROLE_INVALID = new ErrorCode(1_052_200_042, "价格角色须为 pickup(自提) 或 dropship(一键代发)");
+    ErrorCode XQ_PLATFORM_NOT_EXISTS = new ErrorCode(1_052_200_050, "平台不存在");
+    ErrorCode XQ_PLATFORM_CODE_DUPLICATE = new ErrorCode(1_052_200_051, "平台编码已存在");
+    ErrorCode XQ_PLATFORM_HAS_STORE = new ErrorCode(1_052_200_052, "平台下仍有店铺，不能删除");
+    ErrorCode XQ_STORE_NOT_EXISTS = new ErrorCode(1_052_200_053, "店铺不存在");
+    ErrorCode XQ_PLATFORM_ALIAS_DUPLICATE = new ErrorCode(1_052_200_054, "平台别名已存在");
+    ErrorCode XQ_PLATFORM_ALIAS_NOT_EXISTS = new ErrorCode(1_052_200_055, "平台别名不存在");
+    ErrorCode XQ_STORE_ACCESS_DENIED = new ErrorCode(1_052_200_056, "无权使用该店铺，请在店铺平台中绑定");
+    ErrorCode XQ_WAREHOUSE_NOT_EXISTS = new ErrorCode(1_052_200_057, "发货仓库不存在");
+    ErrorCode XQ_WAREHOUSE_CODE_DUPLICATE = new ErrorCode(1_052_200_058, "发货仓库编码已存在");
+    ErrorCode XQ_STORE_WAREHOUSE_NOT_EXISTS = new ErrorCode(1_052_200_059, "店铺发货仓绑定不存在");
 
 }

@@ -424,7 +424,10 @@ public class GlobalExceptionHandler {
             return CommonResult.error(NOT_IMPLEMENTED.getCode(),
                     "[微信公众号 yudao-module-mp - 表结构未导入][参考 https://cloud.iocoder.cn/mp/build/ 开启]");
         }
-        // 5. 商城系统
+        // 5. 商城系统（排除 Giga 选品表 t_gigab2b_product_*，避免误报商城未导入）
+        if (StrUtil.containsAny(message, "gigab2b_product", "t_giga_", "xq_product", "xq_work_order")) {
+            return null;
+        }
         if (StrUtil.containsAny(message, "product_", "promotion_", "trade_")) {
             log.error("[商城系统 yudao-module-mall - 表结构未导入][参考 https://cloud.iocoder.cn/mall/build/ 开启]");
             return CommonResult.error(NOT_IMPLEMENTED.getCode(),

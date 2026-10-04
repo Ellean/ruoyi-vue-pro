@@ -24,6 +24,8 @@ public class XqSysStoreDO {
     /** 后台填写的平台名，如 amazon / wayfair / kohls */
     private String platform;
     private String account;
+    /** 店铺卖家密码（原库明文或既有存储） */
+    private String password;
     private String imageUrl;
     private Integer status;
     private String remark;

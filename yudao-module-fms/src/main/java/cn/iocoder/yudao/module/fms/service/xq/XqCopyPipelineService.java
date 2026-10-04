@@ -1,6 +1,7 @@
 package cn.iocoder.yudao.module.fms.service.xq;
 
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyCallbackReqVO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 
 import java.util.List;
@@ -15,7 +16,10 @@ public interface XqCopyPipelineService {
     /** 组装单条任务给 RPA 的 inputParam（含规则、原图、原文案、回调） */
     Map<String, Object> buildJobInput(XqWorkOrderDO order, Long userId);
 
-    /** 触发文案 RPA；返回 workUuid */
+    /** 写入当前登录人待跑记录，不触发 Commander */
+    void enqueueCopyJob(XqWorkOrderDO order, Long userId);
+
+    /** 触发文案 RPA；返回 workUuid（测试期批量不再调用） */
     String triggerCopyJob(XqWorkOrderDO order, Long userId);
 
     /** 批量触发（逐条入队） */
@@ -29,5 +33,8 @@ public interface XqCopyPipelineService {
 
     /** 按 SKU 补齐原文案/原图/规则后返回 RPA 任务包 */
     Map<String, Object> buildCopyDetailBySku(Long userId, String sku);
+
+    /** 只读源库 Giga 产品（挂起主库事务） */
+    XqGigaProductRow readGigaProduct(String gigaProductId, String sku);
 
 }

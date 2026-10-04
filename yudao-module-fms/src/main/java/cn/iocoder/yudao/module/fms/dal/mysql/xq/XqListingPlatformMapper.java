@@ -19,4 +19,10 @@ public interface XqListingPlatformMapper extends BaseMapperX<XqListingPlatformDO
                 .orderByAsc(XqListingPlatformDO::getName));
     }
 
+    default List<XqListingPlatformDO> selectAllList() {
+        return selectList(new LambdaQueryWrapperX<XqListingPlatformDO>()
+                .orderByAsc(XqListingPlatformDO::getSortOrder)
+                .orderByAsc(XqListingPlatformDO::getName));
+    }
+
 }

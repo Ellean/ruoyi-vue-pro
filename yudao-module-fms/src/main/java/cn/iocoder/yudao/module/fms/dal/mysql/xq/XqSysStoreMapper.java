@@ -20,4 +20,10 @@ public interface XqSysStoreMapper extends BaseMapperX<XqSysStoreDO> {
                 .orderByAsc(XqSysStoreDO::getId));
     }
 
+    default List<XqSysStoreDO> selectAllActive() {
+        return selectList(new LambdaQueryWrapperX<XqSysStoreDO>()
+                .eq(XqSysStoreDO::getDelFlag, "0")
+                .orderByAsc(XqSysStoreDO::getId));
+    }
+
 }

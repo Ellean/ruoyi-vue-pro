@@ -2,14 +2,27 @@ package cn.iocoder.yudao.module.fms.service.xq;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
-import cn.hutool.http.HttpRequest;
-import cn.hutool.http.HttpResponse;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.module.ai.dal.dataobject.model.AiApiKeyDO;
+import cn.iocoder.yudao.module.ai.dal.dataobject.model.AiModelDO;
+import cn.iocoder.yudao.module.ai.enums.model.AiModelTypeEnum;
+import cn.iocoder.yudao.module.ai.enums.model.AiPlatformEnum;
+import cn.iocoder.yudao.module.ai.service.model.AiApiKeyService;
+import cn.iocoder.yudao.module.ai.service.model.AiModelService;
+import cn.iocoder.yudao.module.ai.util.AiUtils;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiClassifyImagesReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiGenerateCopyReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiImagePromptsReqVO;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.ChatOptions;
+import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
@@ -27,10 +40,11 @@ import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.XQ_RPA_AI_FAI
 import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.XQ_RPA_TRIGGER_FAIL;
 
 /**
- * 主 API：OpenAI 兼容 Chat Completions，供文案 RPA 分步调用。
+ * 主 API：文案走默认对话模型；识图配置只下发给 RPA，原图不进本进程。
  */
 @Service
 @Validated
+@Slf4j
 public class XqRpaAiServiceImpl implements XqRpaAiService {
 
     private static final Set<String> IMAGE_TYPE_SET = Set.of(
@@ -47,20 +61,13 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
 
     @Value("${xq.rpa.callback-token:xq-rpa-callback}")
     private String callbackToken;
-    @Value("${xq.ai.base-url:}")
-    private String aiBaseUrl;
-    @Value("${spring.ai.openai.base-url:https://api.openai.com}")
-    private String springOpenAiBaseUrl;
-    @Value("${xq.ai.api-key:}")
-    private String aiApiKey;
-    @Value("${spring.ai.openai.api-key:}")
-    private String springOpenAiApiKey;
-    @Value("${xq.ai.model:gpt-4o-mini}")
-    private String aiModel;
-    @Value("${xq.ai.timeout-ms:180000}")
-    private int aiTimeoutMs;
-    @Value("${xq.ai.mock-when-empty:true}")
+    @Value("${xq.ai.mock-when-empty:false}")
     private boolean mockWhenEmpty;
+
+    @Resource
+    private AiModelService aiModelService;
+    @Resource
+    private AiApiKeyService aiApiKeyService;
 
     @Override
     public Map<String, Object> generateCopy(XqRpaAiGenerateCopyReqVO reqVO) {
@@ -75,16 +82,18 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
             return mockCopy(sku, title0, original, rule);
         }
 
-        String system = "你是亚马逊/跨境电商文案优化助手。必须遵守用户给出的文案规则硬约束。"
-                + "根据原文案与产品信息输出 JSON："
-                + "{\"title\":\"...\",\"sellingPoints\":[\"...\"],\"description\":\"...\","
-                + "\"highlightStyle\":\"突出内容风格说明（中文可）\"}。"
-                + "sellingPoints 条数必须等于指定卖点数；突出产品核心卖点与差异化；"
-                + "不要编造认证/品牌；标题与卖点用英文（除非规则要求中文）。";
+        String system = "你是亚马逊/跨境电商文案优化助手。只输出一个完整 JSON，禁止截断、禁止 markdown。"
+                + "字段：{\"title\":\"完整英文标题\",\"sellingPoints\":[\"完整英文句子\"],"
+                + "\"description\":\"完整英文长描述\",\"highlightStyle\":\"完整中文突出卖点摘要\"}。"
+                + "title、sellingPoints、description 必须是完整英文句子，以句号结尾，不要半截词。"
+                + "sellingPoints 条数必须等于指定卖点数，每条独立成句。"
+                + "description 是 Product Description：4到8句、不少于80个英文单词，写清材质/尺寸/场景/差异点。"
+                + "highlightStyle 用中文完整句子概括突出卖点，不要英文、不要半截。"
+                + "不要编造认证/品牌。";
         Map<String, Object> user = new LinkedHashMap<>();
         user.put("sku", sku);
         user.put("productTitle", title0);
-        user.put("originalCopy", StrUtil.maxLength(original, 8000));
+        user.put("originalCopy", StrUtil.maxLength(original, 4000));
         user.put("featureCount", rule.featureCount);
         user.put("rules", Map.of(
                 "generateTitle", rule.generateTitle,
@@ -96,26 +105,40 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         ));
         user.put("imageCount", CollUtil.size(reqVO.getSourceImages()));
 
-        String raw = chat(system, JSONUtil.toJsonStr(user));
+        String raw = chat(system, JSONUtil.toJsonStr(user), 4096);
         JSONObject parsed = extractJsonObject(raw);
         List<String> points = normalizePoints(parsed.get("sellingPoints"));
         if (points.isEmpty()) {
             points = normalizePoints(parsed.get("bulletPoints"));
         }
-        points = padPoints(points, rule.featureCount, rule.featureMaxLen);
-        String title = StrUtil.blankToDefault(parsed.getStr("title"), title0);
-        if (title.length() > rule.titleMaxLen) {
-            title = title.substring(0, rule.titleMaxLen);
-        }
-        String desc = StrUtil.blankToDefault(parsed.getStr("description"), "");
-        if (desc.length() > rule.descriptionMaxLen) {
-            desc = desc.substring(0, rule.descriptionMaxLen);
+        points = padPoints(points, rule.featureCount, Math.max(rule.featureMaxLen, 400));
+        String title = clipAtSentence(StrUtil.blankToDefault(parsed.getStr("title"), title0), rule.titleMaxLen);
+        String desc = clipAtSentence(StrUtil.blankToDefault(parsed.getStr("description"), ""),
+                Math.max(rule.descriptionMaxLen, 2000));
+        String highlight = clipAtSentence(StrUtil.blankToDefault(parsed.getStr("highlightStyle"), ""), 800);
+        if (StrUtil.isBlank(highlight) && StrUtil.isNotBlank(desc)) {
+            highlight = desc;
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("title", title);
         out.put("sellingPoints", points);
         out.put("description", desc);
-        out.put("highlightStyle", StrUtil.blankToDefault(parsed.getStr("highlightStyle"), desc));
+        out.put("highlightStyle", highlight);
+        return out;
+    }
+
+    @Override
+    public Map<String, Object> getVisionProfile(String callbackToken) {
+        assertToken(callbackToken);
+        AiModelDO model = aiModelService.getRequiredDefaultModel(AiModelTypeEnum.CHAT.getType());
+        AiApiKeyDO key = aiApiKeyService.validateApiKey(model.getKeyId());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("platform", model.getPlatform());
+        out.put("model", model.getModel());
+        out.put("baseUrl", StrUtil.blankToDefault(key.getUrl(), ""));
+        out.put("apiKey", StrUtil.blankToDefault(key.getApiKey(), ""));
+        out.put("temperature", model.getTemperature() != null ? model.getTemperature() : 0.3);
+        out.put("maxTokens", model.getMaxTokens() != null ? model.getMaxTokens() : 4096);
         return out;
     }
 
@@ -123,49 +146,20 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
     public List<Map<String, Object>> classifyImages(XqRpaAiClassifyImagesReqVO reqVO) {
         assertToken(reqVO == null ? null : reqVO.getCallbackToken());
         List<String> images = normalizeUrls(reqVO.getSourceImages());
-        if (images.isEmpty() || useMock(reqVO.getMock())) {
-            return classifyMock(images);
+        if (images.size() > 8) {
+            images = new ArrayList<>(images.subList(0, 8));
         }
-        String system = "你是跨境电商图片质检助手。根据图片 URL 顺序判断每张图类型。"
-                + "类型只能是: main, dimension, detail, scene, package, other。"
-                + "第 1 张通常是主图。尺寸图含测量标注。"
-                + "只返回 JSON 数组: [{\"index\":0,\"imageType\":\"main\",\"marker\":\"...\",\"bindIndexes\":[0]}]"
-                + "尺寸图 bindIndexes 必须同时包含产品原图下标(通常0)和尺寸图自身下标。";
-        StringBuilder user = new StringBuilder("图片列表:\n");
-        for (int i = 0; i < images.size(); i++) {
-            user.append(i).append(". ").append(images.get(i)).append('\n');
-        }
-        String raw = chat(system, user.toString());
-        JSONArray arr = extractJsonArray(raw);
-        if (arr == null || arr.isEmpty()) {
-            return classifyMock(images);
-        }
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (int i = 0; i < images.size(); i++) {
-            JSONObject item = findByIndex(arr, i);
-            String t = StrUtil.blankToDefault(item.getStr("imageType"), i == 0 ? "main" : "other").toLowerCase();
-            if (!IMAGE_TYPE_SET.contains(t)) {
-                t = "other";
-            }
-            List<Integer> binds = toIntList(item.get("bindIndexes"));
-            if (binds.isEmpty()) {
-                binds = "dimension".equals(t) && i != 0 ? List.of(0, i) : List.of(i);
-            }
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("index", i);
-            row.put("imageUrl", images.get(i));
-            row.put("imageType", t);
-            row.put("marker", StrUtil.blankToDefault(item.getStr("marker"), TYPE_MARKERS.get(t)));
-            row.put("bindIndexes", binds);
-            out.add(row);
-        }
-        return out;
+        log.info("[classifyImages] 服务端不下载原图，仅 URL 兜底分型 count={}", images.size());
+        return classifyMock(images);
     }
 
     @Override
     public List<Map<String, Object>> generateImagePrompts(XqRpaAiImagePromptsReqVO reqVO) {
         assertToken(reqVO == null ? null : reqVO.getCallbackToken());
         List<Map<String, Object>> metaList = reqVO.getImagesMeta() == null ? List.of() : reqVO.getImagesMeta();
+        if (metaList.size() > 8) {
+            metaList = metaList.subList(0, 8);
+        }
         Map<String, Object> copy = reqVO.getCopyResult() == null ? Map.of() : reqVO.getCopyResult();
         Map<String, Object> imageRule = reqVO.getImageRule() == null ? Map.of() : reqVO.getImageRule();
         List<String> points = normalizePoints(copy.get("sellingPoints"));
@@ -174,57 +168,91 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         boolean mock = useMock(reqVO.getMock());
 
         List<Map<String, Object>> out = new ArrayList<>();
+        List<Map<String, Object>> batch = new ArrayList<>();
         for (Map<String, Object> meta : metaList) {
             int idx = toInt(meta.get("index"), out.size());
             String t = StrUtil.blankToDefault(str(meta.get("imageType")), "other").toLowerCase();
             String marker = StrUtil.blankToDefault(str(meta.get("marker")), TYPE_MARKERS.getOrDefault(t, "其它参考图"));
-            String nameLine = switch (t) {
-                case "main" -> "主图-卖点";
-                case "dimension" -> "尺寸图";
-                case "detail" -> "细节图";
-                case "scene" -> "场景图";
-                case "package" -> "包装图";
-                default -> "参考图" + (idx + 1);
-            };
+            String nameLine = nameLineOf(t, idx);
             String point = points.isEmpty() ? "product highlight" : points.get(idx % points.size());
-            String prompt;
-            if (mock) {
-                prompt = nameLine + "\nType=" + t + "; Marker=" + marker + "; Focus=" + point
-                        + ". Photorealistic ecommerce image, English on-image text only if needed. RuleHint="
-                        + StrUtil.maxLength(baseHint, 180);
-                if ("dimension".equals(t)) {
-                    prompt += " Bind product photo + dimension annotation roles clearly.";
-                }
-            } else {
-                String system = "你是电商生图提示词专家。输出纯文本提示词："
-                        + "第一行=图片名称；其后为英文生图提示。"
-                        + "必须体现图类型与标记；结合给定卖点；图上可读文字默认英文；"
-                        + "尺寸图需说明产品外形参考图与尺寸标注图的角色。"
-                        + "可参考内置兜底：产品保真、禁人类/宠物/侵权 Logo、画布约 2000x2000 1:1；"
-                        + "用户规则提示词优先。";
-                Map<String, Object> user = new LinkedHashMap<>();
-                user.put("imageName", nameLine);
-                user.put("imageType", t);
-                user.put("marker", marker);
-                user.put("bindIndexes", meta.get("bindIndexes"));
-                user.put("sellingPoint", point);
-                user.put("title", copy.get("title"));
-                user.put("highlightStyle", copy.get("highlightStyle"));
-                user.put("rulePrompt", baseHint);
-                user.put("negativePrompt", neg);
-                prompt = StrUtil.trim(chat(system, JSONUtil.toJsonStr(user)));
-                if (!prompt.startsWith(nameLine)) {
-                    prompt = nameLine + "\n" + prompt;
-                }
-            }
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("index", idx);
             row.put("imageType", t);
             row.put("imageUrl", meta.get("imageUrl"));
             row.put("marker", marker);
             row.put("bindIndexes", meta.get("bindIndexes") != null ? meta.get("bindIndexes") : List.of(idx));
-            row.put("promptText", prompt);
+            row.put("nameLine", nameLine);
+            row.put("sellingPoint", point);
             out.add(row);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("index", idx);
+            item.put("imageName", nameLine);
+            item.put("imageType", t);
+            item.put("marker", marker);
+            item.put("sellingPoint", point);
+            item.put("imageUrl", str(meta.get("imageUrl")));
+            batch.add(item);
+        }
+        if (out.isEmpty()) {
+            return out;
+        }
+        Map<Integer, String> promptByIndex = new LinkedHashMap<>();
+        if (!mock) {
+            String system = "你是电商生图提示词专家。只根据 images[].imageType 与卖点写提示词，不要假设看过原图像素。"
+                    + "只返回 JSON：[{\"index\":0,\"imageType\":\"scene\",\"promptText\":\"第一行图片名称\\n英文提示\"}]。"
+                    + "promptText 第一行必须是中文图名（主图-卖点/尺寸图/细节图/场景图/包装图）。";
+            Map<String, Object> user = new LinkedHashMap<>();
+            user.put("title", copy.get("title"));
+            user.put("highlightStyle", copy.get("highlightStyle"));
+            user.put("rulePrompt", StrUtil.maxLength(baseHint, 300));
+            user.put("negativePrompt", StrUtil.maxLength(neg, 200));
+            user.put("images", batch);
+            JSONArray arr = extractJsonArray(chat(system, JSONUtil.toJsonStr(user), 2200));
+            Map<Integer, JSONObject> byIndex = new LinkedHashMap<>();
+            if (arr != null) {
+                for (int i = 0; i < arr.size(); i++) {
+                    JSONObject item = arr.getJSONObject(i);
+                    if (item != null) {
+                        byIndex.put(item.getInt("index", i), item);
+                    }
+                }
+            }
+            for (Map<String, Object> row : out) {
+                int idx = toInt(row.get("index"), 0);
+                JSONObject item = byIndex.get(idx);
+                if (item != null && StrUtil.isNotBlank(item.getStr("imageType"))) {
+                    String t = item.getStr("imageType").toLowerCase();
+                    if (IMAGE_TYPE_SET.contains(t)) {
+                        row.put("imageType", t);
+                        row.put("marker", TYPE_MARKERS.getOrDefault(t, str(row.get("marker"))));
+                        row.put("nameLine", nameLineOf(t, idx));
+                    }
+                }
+                if (item != null) {
+                    promptByIndex.put(idx, StrUtil.trim(item.getStr("promptText")));
+                }
+            }
+        }
+        for (Map<String, Object> row : out) {
+            int idx = toInt(row.get("index"), 0);
+            String nameLine = str(row.get("nameLine"));
+            String t = str(row.get("imageType"));
+            String marker = str(row.get("marker"));
+            String point = str(row.get("sellingPoint"));
+            String prompt = promptByIndex.get(idx);
+            if (StrUtil.isBlank(prompt)) {
+                prompt = nameLine + "\nType=" + t + "; Marker=" + marker + "; Focus=" + point
+                        + ". Photorealistic ecommerce image, English on-image text only if needed. RuleHint="
+                        + StrUtil.maxLength(baseHint, 180);
+                if ("dimension".equals(t)) {
+                    prompt += " Bind product photo + dimension annotation roles clearly.";
+                }
+            } else if (!prompt.startsWith(nameLine)) {
+                prompt = nameLine + "\n" + prompt;
+            }
+            row.put("promptText", prompt);
+            row.remove("nameLine");
+            row.remove("sellingPoint");
         }
         return out;
     }
@@ -238,61 +266,62 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
     }
 
     private boolean useMock(Boolean reqMock) {
-        if (Boolean.TRUE.equals(reqMock)) {
-            return true;
-        }
-        String key = resolveApiKey();
-        return mockWhenEmpty && (StrUtil.isBlank(key) || key.contains("xxxx"));
-    }
-
-    private String resolveApiKey() {
-        return StrUtil.blankToDefault(aiApiKey, springOpenAiApiKey);
-    }
-
-    private String resolveBaseUrl() {
-        String base = StrUtil.blankToDefault(aiBaseUrl, springOpenAiBaseUrl);
-        base = StrUtil.removeSuffix(StrUtil.blankToDefault(base, "https://api.openai.com"), "/");
-        if (base.endsWith("/chat/completions")) {
-            return base.substring(0, base.length() - "/chat/completions".length());
-        }
-        if (!base.endsWith("/v1")) {
-            base = base + "/v1";
-        }
-        return base;
+        return Boolean.TRUE.equals(reqMock) || mockWhenEmpty;
     }
 
     private String chat(String system, String user) {
-        String url = resolveBaseUrl() + "/chat/completions";
-        String key = resolveApiKey();
-        JSONObject body = new JSONObject();
-        body.set("model", StrUtil.blankToDefault(aiModel, "gpt-4o-mini"));
-        body.set("temperature", 0.4);
-        JSONArray messages = new JSONArray();
-        messages.add(new JSONObject().set("role", "system").set("content", system));
-        messages.add(new JSONObject().set("role", "user").set("content", user));
-        body.set("messages", messages);
+        return chat(system, user, 1200);
+    }
+
+    private String chat(String system, String user, int maxTokens) {
+        long start = System.currentTimeMillis();
         try {
-            HttpResponse resp = HttpRequest.post(url)
-                    .header("Authorization", "Bearer " + key.trim())
-                    .header("Content-Type", "application/json; charset=utf-8")
-                    .body(body.toString())
-                    .timeout(aiTimeoutMs)
-                    .execute();
-            if (!resp.isOk()) {
-                throw exception(XQ_RPA_AI_FAIL, "HTTP " + resp.getStatus() + " " + StrUtil.maxLength(resp.body(), 300));
+            AiModelDO model = aiModelService.getRequiredDefaultModel(AiModelTypeEnum.CHAT.getType());
+            ChatModel chatModel = aiModelService.getChatModel(model.getId());
+            AiPlatformEnum platform = AiPlatformEnum.validatePlatform(model.getPlatform());
+            Double temperature = model.getTemperature() != null ? model.getTemperature() : 0.3;
+            int cap = Math.max(256, maxTokens);
+            ChatOptions options = AiUtils.buildChatOptions(platform, model.getModel(), temperature, cap);
+            if (platform == AiPlatformEnum.OPENAI || platform == AiPlatformEnum.GROK) {
+                options = org.springframework.ai.openai.OpenAiChatOptions.builder()
+                        .model(model.getModel())
+                        .temperature(temperature)
+                        .maxCompletionTokens(cap)
+                        .reasoningEffort("low")
+                        .build();
             }
-            JSONObject data = JSONUtil.parseObj(resp.body());
-            String content = data.getByPath("choices[0].message.content", String.class);
+            Prompt prompt = new Prompt(List.of(new SystemMessage(system), new UserMessage(user)), options);
+            ChatResponse resp = chatModel.call(prompt);
+            String content = resp.getResult() != null && resp.getResult().getOutput() != null
+                    ? resp.getResult().getOutput().getText() : null;
+            log.info("[xq.rpa.ai] model={} {}ms chars={}", model.getModel(),
+                    System.currentTimeMillis() - start, content == null ? 0 : content.length());
             if (StrUtil.isBlank(content)) {
                 throw exception(XQ_RPA_AI_FAIL, "空响应");
             }
             return content;
         } catch (RuntimeException ex) {
+            log.warn("[xq.rpa.ai] fail {}ms: {}", System.currentTimeMillis() - start, ex.getMessage());
             if (ex.getClass().getName().contains("ServiceException")) {
                 throw ex;
             }
             throw exception(XQ_RPA_AI_FAIL, StrUtil.blankToDefault(ex.getMessage(), "未知错误"));
         }
+    }
+
+    private static String clipAtSentence(String text, int maxLen) {
+        String s = StrUtil.blankToDefault(text, "").trim();
+        if (s.length() <= maxLen) {
+            return s;
+        }
+        String cut = s.substring(0, maxLen);
+        int p = Math.max(Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('.')),
+                Math.max(cut.lastIndexOf('！'), cut.lastIndexOf('?')));
+        if (p >= maxLen / 2) {
+            return cut.substring(0, p + 1).trim();
+        }
+        int sp = cut.lastIndexOf(' ');
+        return (sp > maxLen / 2 ? cut.substring(0, sp) : cut).trim();
     }
 
     private static Map<String, Object> mockCopy(String sku, String title0, String original, CopyRule rule) {
@@ -317,18 +346,7 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
     private static List<Map<String, Object>> classifyMock(List<String> images) {
         List<Map<String, Object>> out = new ArrayList<>();
         for (int i = 0; i < images.size(); i++) {
-            String t;
-            if (i == 0) {
-                t = "main";
-            } else if (i == 1) {
-                t = "dimension";
-            } else if (i == 2 || i == 3) {
-                t = "detail";
-            } else if (i == 4 || i == 5) {
-                t = "scene";
-            } else {
-                t = "other";
-            }
+            String t = guessTypeFromUrl(i, images.get(i));
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("index", i);
             row.put("imageUrl", images.get(i));
@@ -338,6 +356,38 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
             out.add(row);
         }
         return out;
+    }
+
+    /** 禁止把第 2 张默认当尺寸图；尺寸图必须文件名像工程图，否则宁可不标 */
+    private static String guessTypeFromUrl(int index, String url) {
+        String u = StrUtil.blankToDefault(url, "").toLowerCase();
+        if (u.contains("dimension") || u.contains("spec-sheet") || u.contains("sizechart")
+                || u.contains("size-chart") || u.contains("/cad") || u.contains("line-drawing")
+                || u.contains("measure") || u.contains("diagram")) {
+            return "dimension";
+        }
+        if (u.contains("scene") || u.contains("lifestyle") || u.contains("kitchen")
+                || u.contains("room") || u.contains("install")) {
+            return "scene";
+        }
+        if (u.contains("detail") || u.contains("closeup") || u.contains("close-up") || u.contains("texture")) {
+            return "detail";
+        }
+        if (u.contains("pack") || u.contains("box") || u.contains("kit")) {
+            return "package";
+        }
+        return index == 0 ? "main" : "other";
+    }
+
+    private static String nameLineOf(String type, int idx) {
+        return switch (StrUtil.blankToDefault(type, "other")) {
+            case "main" -> "主图-卖点";
+            case "dimension" -> "尺寸图";
+            case "detail" -> "细节图";
+            case "scene" -> "场景图";
+            case "package" -> "包装图";
+            default -> "参考图" + (idx + 1);
+        };
     }
 
     private static CopyRule parseCopyRule(Map<String, Object> copyRule) {
@@ -425,7 +475,7 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
             if (out.size() >= n) {
                 break;
             }
-            out.add(p.length() > maxLen ? p.substring(0, maxLen) : p);
+            out.add(clipAtSentence(p, Math.max(maxLen, 80)));
         }
         while (out.size() < n) {
             out.add("Key benefit " + (out.size() + 1));

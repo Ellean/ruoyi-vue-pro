@@ -11,6 +11,6 @@ public class XqListingShopRespVO {
     private String code;
     private String name;
     private Boolean enabled;
-    /** 后台店铺管理原始平台字段（sys_store.platform） */
+    /** 业务平台编码（xq_platform.code） */
     private String storePlatform;
 }

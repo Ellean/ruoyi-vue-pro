@@ -18,8 +18,11 @@ public class XqWorkOrderUpdateReqVO {
     @Schema(description = "卖点（多行）")
     private String contentSellingPoints;
 
-    @Schema(description = "突出内容/长描述风格")
+    @Schema(description = "突出内容风格")
     private String contentHighlight;
+
+    @Schema(description = "英文长描述")
+    private String contentDescription;
 
     @Schema(description = "完整文案 JSON（可选，覆盖写）")
     private String copyResultJson;

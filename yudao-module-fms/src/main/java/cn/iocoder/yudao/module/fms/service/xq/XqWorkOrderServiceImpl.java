@@ -14,7 +14,6 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderU
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqProductDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
-import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqGigaProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqWorkOrderMapper;
 import cn.hutool.json.JSONUtil;
@@ -46,7 +45,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     @Resource
     private XqCopyPipelineService copyPipelineService;
     @Resource
-    private XqGigaProductMapper gigaProductMapper;
+    private XqStoreScopeService storeScopeService;
 
     @Override
     public PageResult<XqWorkOrderDO> getWorkOrderPage(XqWorkOrderPageReqVO pageReqVO) {
@@ -68,6 +67,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (StrUtil.isNotBlank(updateReqVO.getCopyResultJson())) {
             update.setCopyResultJson(updateReqVO.getCopyResultJson());
         } else if (updateReqVO.getContentHighlight() != null
+                || updateReqVO.getContentDescription() != null
                 || updateReqVO.getContentTitle() != null
                 || updateReqVO.getContentSellingPoints() != null) {
             // 合并突出内容到 copy_result_json，供右侧编辑区回显
@@ -82,7 +82,9 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             }
             if (updateReqVO.getContentHighlight() != null) {
                 json.set("highlightStyle", updateReqVO.getContentHighlight());
-                json.set("description", updateReqVO.getContentHighlight());
+            }
+            if (updateReqVO.getContentDescription() != null) {
+                json.set("description", updateReqVO.getContentDescription());
             }
             update.setCopyResultJson(json.toString());
         }
@@ -93,13 +95,27 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public List<XqWorkOrderDO> dispatchFromLibrary(XqWorkOrderDispatchReqVO reqVO, Long userId) {
         if (reqVO == null || CollUtil.isEmpty(reqVO.getItems())) {
             throw exception(XQ_DISPATCH_EMPTY);
         }
         if (StrUtil.hasBlank(reqVO.getListingPlatformId(), reqVO.getListingCategoryId())) {
             throw exception(XQ_DISPATCH_LISTING_REQUIRED);
+        }
+        // 平台/店铺以主库 xq_* 为准；店铺范围挂在芋道用户上（xq_user_store）
+        if (storeScopeService.getPlatform(XqStoreScopeService.parseLong(reqVO.getListingPlatformId())) == null) {
+            throw exception(XQ_PLATFORM_NOT_EXISTS);
+        }
+        if (StrUtil.isNotBlank(reqVO.getListingShopId())) {
+            Long shopId = XqStoreScopeService.parseLong(reqVO.getListingShopId());
+            if (storeScopeService.getStore(shopId) == null) {
+                throw exception(XQ_STORE_NOT_EXISTS);
+            }
+            if (!storeScopeService.isStoreAllowed(userId, shopId)) {
+                throw exception(XQ_STORE_ACCESS_DENIED);
+            }
+        } else if (storeScopeService.getAllowedStoreIds(userId) != null) {
+            throw exception(XQ_STORE_ACCESS_DENIED);
         }
         // 先校验：同 SKU + 同平台 已有进行中/已上架 → 硬拦截（不同平台可并行）
         for (XqWorkOrderDispatchReqVO.Item item : reqVO.getItems()) {
@@ -125,13 +141,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             String sourceDescription = null;
             String sourceImageUrls = null;
             String gigaProductId = StrUtil.trim(item.getProductId());
-            XqGigaProductRow giga = null;
-            if (StrUtil.isNotBlank(gigaProductId)) {
-                giga = gigaProductMapper.selectById(gigaProductId);
-            }
-            if (giga == null) {
-                giga = gigaProductMapper.selectBySku(sku);
-            }
+            XqGigaProductRow giga = copyPipelineService.readGigaProduct(gigaProductId, sku);
             if (giga != null) {
                 gigaProductId = giga.getId();
                 sourceDescription = giga.getDescription();
@@ -218,7 +228,6 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public List<XqWorkOrderDO> batchGenerateCopy(XqWorkOrderBatchIdsReqVO reqVO, Long userId) {
         if (reqVO == null || CollUtil.isEmpty(reqVO.getIds())) {
             throw exception(XQ_DISPATCH_EMPTY);
@@ -232,8 +241,8 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
     private XqWorkOrderDO generateCopyInternal(Long id, Long claimUserId) {
         XqWorkOrderDO order = validateDoing(id);
-        // 主 API 只触发文案 RPA（规则→文案→识图→图提示词）；结果走回调落库
-        copyPipelineService.triggerCopyJob(order, claimUserId);
+        // 只写入个人待跑，不触发 Commander；RPA 手动启动后按登录人拉取 SKU
+        copyPipelineService.enqueueCopyJob(order, claimUserId);
         return workOrderMapper.selectById(id);
     }
 

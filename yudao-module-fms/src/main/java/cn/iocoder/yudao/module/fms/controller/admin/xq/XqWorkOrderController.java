@@ -75,7 +75,7 @@ public class XqWorkOrderController {
     }
 
     @PostMapping("/generate-copy")
-    @Operation(summary = "触发生成文案 RPA（规则→文案→图提示词）")
+    @Operation(summary = "写入个人待跑文案（不触发机器人）")
     @Parameter(name = "id", description = "任务编号", required = true)
     @PreAuthorize("@ss.hasPermission('xq:work-order:gen-copy')")
     public CommonResult<XqWorkOrderRespVO> generateCopy(@RequestParam("id") Long id) {
@@ -83,7 +83,7 @@ public class XqWorkOrderController {
     }
 
     @PostMapping("/batch-generate-copy")
-    @Operation(summary = "批量触发文案 RPA 并领取")
+    @Operation(summary = "批量写入个人待跑文案（不触发机器人）")
     @PreAuthorize("@ss.hasPermission('xq:work-order:batch-copy')")
     public CommonResult<List<XqWorkOrderRespVO>> batchGenerateCopy(
             @Valid @RequestBody XqWorkOrderBatchIdsReqVO reqVO) {
