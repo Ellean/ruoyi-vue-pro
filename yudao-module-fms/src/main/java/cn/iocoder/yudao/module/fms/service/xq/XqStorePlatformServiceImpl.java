@@ -589,12 +589,17 @@ public class XqStorePlatformServiceImpl implements XqStorePlatformService {
                 continue;
             }
             XqLegacyRoleDO role = roleById.get(ur.getRoleId().trim());
-            if (role == null || StrUtil.isBlank(role.getScope())) {
+            if (role == null) {
+                continue;
+            }
+            // scope 优先；美工等 scope 为空时用 type（mg / cs / phyy）
+            String key = StrUtil.blankToDefault(role.getScope(), role.getType());
+            if (StrUtil.isBlank(key)) {
                 continue;
             }
             legacyUserScopes
                     .computeIfAbsent(ur.getUserId().trim(), k -> new LinkedHashSet<>())
-                    .add(role.getScope().trim().toLowerCase(Locale.ROOT));
+                    .add(key.trim().toLowerCase(Locale.ROOT));
         }
         Map<String, Set<Integer>> legacyUserStores = new HashMap<>();
         for (XqSysUserGroupDO g : CollUtil.emptyIfNull(groups)) {
@@ -614,6 +619,8 @@ public class XqStorePlatformServiceImpl implements XqStorePlatformService {
                         r -> r.getCode().trim().toLowerCase(Locale.ROOT),
                         RoleDO::getId,
                         (a, b) -> a));
+        // 补齐财务/采购等业务角色（当前租户）
+        ensureXqBusinessRoles(roleCodeToId);
 
         String initPassword = StrUtil.blankToDefault(
                 configApi.getConfigValueByKey(USER_INIT_PASSWORD_KEY), DEFAULT_INIT_PASSWORD);
@@ -703,14 +710,42 @@ public class XqStorePlatformServiceImpl implements XqStorePlatformService {
                 created, matched, roleAssigned, bound, failed.size());
     }
 
-    /** 原库 scope → 芋道角色 code；有绑店无角色时默认给文案岗 */
+    /** 当前租户缺少财务/采购角色时补建 */
+    private void ensureXqBusinessRoles(Map<String, Long> roleCodeToId) {
+        ensureRole(roleCodeToId, "xq_finance", "财务", 23, "原库财务岗");
+        ensureRole(roleCodeToId, "xq_purchase", "采购", 24, "原库采购岗");
+        ensureRole(roleCodeToId, "xq_copy", "文案人员", 20, "工作台文案");
+        ensureRole(roleCodeToId, "xq_image", "图片人员", 21, "工作台图片");
+        ensureRole(roleCodeToId, "xq_store_admin", "店铺管理员", 22, "店铺平台维护");
+    }
+
+    private void ensureRole(Map<String, Long> roleCodeToId, String code, String name, int sort, String remark) {
+        String key = code.toLowerCase(Locale.ROOT);
+        if (roleCodeToId.containsKey(key)) {
+            return;
+        }
+        RoleDO role = new RoleDO();
+        role.setName(name);
+        role.setCode(code);
+        role.setSort(sort);
+        role.setStatus(CommonStatusEnum.ENABLE.getStatus());
+        role.setType(2); // 自定义
+        role.setDataScope(1); // 全部数据权限
+        role.setDataScopeDeptIds(Collections.emptySet());
+        role.setRemark(remark);
+        roleMapper.insert(role);
+        roleCodeToId.put(key, role.getId());
+        log.info("[syncFromLegacy] 补建角色 {} -> id={}", code, role.getId());
+    }
+
+    /** 原库 scope/type → 芋道角色 code；有绑店无角色时默认给文案岗 */
     private static Set<Long> mapScopesToRoleIds(Set<String> scopes,
                                                 boolean hasStoreBind,
                                                 Map<String, Long> roleCodeToId) {
         Set<String> codes = new LinkedHashSet<>();
         for (String scope : CollUtil.emptyIfNull(scopes)) {
             switch (scope) {
-                case "operator", "yyzz" -> codes.add("xq_copy");
+                case "operator", "yyzz", "phyy", "shaoshanbu", "xiongxiongbu" -> codes.add("xq_copy");
                 case "leader" -> {
                     codes.add("xq_copy");
                     codes.add("xq_image");
@@ -720,10 +755,13 @@ public class XqStorePlatformServiceImpl implements XqStorePlatformService {
                     codes.add("xq_image");
                     codes.add("xq_store_admin");
                 }
-                case "finance", "purchase" -> {
-                    // 暂无独立业务角色：有绑店时下面会兜底 xq_copy
+                case "finance" -> codes.add("xq_finance");
+                case "purchase" -> codes.add("xq_purchase");
+                case "mg" -> codes.add("xq_image"); // 美工
+                case "cs" -> {
+                    // 测试账号不自动赋业务角色
                 }
-                default -> codes.add("xq_copy"); // 韶山部/熊熊部等自定义 scope
+                default -> codes.add("xq_copy");
             }
         }
         if (codes.isEmpty() && hasStoreBind) {
