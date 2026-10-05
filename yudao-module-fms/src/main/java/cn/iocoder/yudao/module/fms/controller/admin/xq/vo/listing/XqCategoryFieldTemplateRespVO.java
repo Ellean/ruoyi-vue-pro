@@ -36,6 +36,8 @@ public class XqCategoryFieldTemplateRespVO {
         private String defaultValue;
         /** 该类目配置的 AI/商品映射，如 ai_title */
         private String valueSource;
+        /** 人工分区：copy=描述 product=产品 attr=属性 */
+        private String zone;
     }
 
 }

@@ -45,6 +45,8 @@ public class XqWorkOrderRespVO {
     private String listingPlatformName;
     private String listingShopName;
     private String listingCategoryName;
+    private String listingCountryCode;
+    private String listingCountryName;
     private String workflowPhase;
     private String rpaCopyWorkUuid;
     private String rpaCopyStatus;

@@ -90,17 +90,14 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .orderByAsc(XqWorkOrderDO::getId));
     }
 
-    /** 当前登录人待跑文案：进行中、已入队；允许重试 fail/running（上次 RPA 中断） */
+    /** 当前登录人待跑文案：只拉主体（变体不跑文案）；仅 queued；默认 1 条 */
     default List<XqWorkOrderDO> selectPendingCopyJobs(Long userId, int limit) {
-        int n = Math.max(1, Math.min(limit, 20));
+        int n = Math.max(1, Math.min(limit, 5));
         return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getStatus, 10)
-                .and(w -> w.eq(XqWorkOrderDO::getCopyUserId, userId)
-                        .or(q -> q.isNull(XqWorkOrderDO::getCopyUserId)
-                                .eq(XqWorkOrderDO::getAssigneeUserId, userId)))
-                .and(w -> w.isNull(XqWorkOrderDO::getRpaCopyStatus)
-                        .or()
-                        .ne(XqWorkOrderDO::getRpaCopyStatus, "success"))
+                .isNull(XqWorkOrderDO::getParentWorkOrderId)
+                .eq(XqWorkOrderDO::getCopyUserId, userId)
+                .eq(XqWorkOrderDO::getRpaCopyStatus, "queued")
                 .orderByAsc(XqWorkOrderDO::getId)
                 .last("LIMIT " + n));
     }

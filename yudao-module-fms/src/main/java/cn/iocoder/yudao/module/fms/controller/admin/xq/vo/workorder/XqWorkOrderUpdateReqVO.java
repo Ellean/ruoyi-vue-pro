@@ -48,4 +48,10 @@ public class XqWorkOrderUpdateReqVO {
     @Schema(description = "上架店铺名")
     private String listingShopName;
 
+    @Schema(description = "上架国家代码")
+    private String listingCountryCode;
+
+    @Schema(description = "上架国家名")
+    private String listingCountryName;
+
 }

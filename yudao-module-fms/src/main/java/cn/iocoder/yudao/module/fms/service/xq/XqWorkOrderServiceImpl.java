@@ -155,6 +155,12 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (updateReqVO.getListingShopName() != null) {
             update.setListingShopName(updateReqVO.getListingShopName());
         }
+        if (updateReqVO.getListingCountryCode() != null) {
+            update.setListingCountryCode(updateReqVO.getListingCountryCode());
+        }
+        if (updateReqVO.getListingCountryName() != null) {
+            update.setListingCountryName(updateReqVO.getListingCountryName());
+        }
         workOrderMapper.updateById(update);
     }
 

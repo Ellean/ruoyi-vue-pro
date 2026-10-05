@@ -154,6 +154,9 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
             throw exception(XQ_WORK_ORDER_STATUS_INVALID);
         }
+        if (order.getParentWorkOrderId() != null) {
+            return;
+        }
         enrichSourceIfNeeded(order);
         if (parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl()).isEmpty()) {
             throw exception(XQ_RPA_AI_FAIL, "任务没有参考图，无法跑文案");
@@ -232,7 +235,7 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (userId == null) {
             throw exception(XQ_RPA_CONFIG_INVALID);
         }
-        int n = limit == null ? 10 : limit;
+        int n = limit == null ? 1 : limit;
         List<XqWorkOrderDO> orders = workOrderMapper.selectPendingCopyJobs(userId, n);
         List<Map<String, Object>> jobs = new ArrayList<>();
         for (XqWorkOrderDO order : orders) {

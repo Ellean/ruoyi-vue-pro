@@ -486,13 +486,15 @@ public class XqListingCatalogService {
             }
             String def = StrUtil.blankToDefault(item.getDefaultValue(), "");
             String src = StrUtil.blankToDefault(item.getValueSource(), "");
-            if (StrUtil.isBlank(def) && StrUtil.isBlank(src)) {
+            String zone = normalizeFieldZone(item.getZone());
+            if (StrUtil.isBlank(def) && StrUtil.isBlank(src) && StrUtil.isBlank(zone)) {
                 continue;
             }
             JSONObject obj = new JSONObject();
             obj.set("code", item.getCode().trim());
             obj.set("defaultValue", def);
             obj.set("valueSource", src);
+            obj.set("zone", zone);
             arr.add(obj);
         }
         LocalDateTime now = LocalDateTime.now();
@@ -523,17 +525,53 @@ public class XqListingCatalogService {
         }
         XqListingCategoryFieldConfigDO row = categoryFieldConfigMapper.selectByCategoryId(categoryId);
         Map<String, XqCategoryFieldConfigRespVO.Item> map = parseFieldConfigItems(row);
-        if (map.isEmpty()) {
-            return;
-        }
         for (XqCategoryFieldTemplateRespVO.Field field : vo.getFields()) {
             XqCategoryFieldConfigRespVO.Item item = map.get(StrUtil.blankToDefault(field.getCode(), ""));
-            if (item == null) {
-                continue;
+            if (item != null) {
+                field.setDefaultValue(item.getDefaultValue());
+                field.setValueSource(item.getValueSource());
+                field.setZone(normalizeFieldZone(item.getZone()));
             }
-            field.setDefaultValue(item.getDefaultValue());
-            field.setValueSource(item.getValueSource());
         }
+        boolean anyZone = vo.getFields().stream().anyMatch(f -> StrUtil.isNotBlank(f.getZone()));
+        if (!anyZone) {
+            for (XqCategoryFieldTemplateRespVO.Field field : vo.getFields()) {
+                field.setZone(guessFieldZone(field));
+            }
+        }
+    }
+
+    private static String normalizeFieldZone(String raw) {
+        String zone = StrUtil.blankToDefault(raw, "").trim().toLowerCase();
+        if ("copy".equals(zone) || "product".equals(zone) || "attr".equals(zone)) {
+            return zone;
+        }
+        return "";
+    }
+
+    private static String guessFieldZone(XqCategoryFieldTemplateRespVO.Field field) {
+        String hay = (StrUtil.blankToDefault(field.getLabel(), "") + " "
+                + StrUtil.blankToDefault(field.getCode(), "") + " "
+                + StrUtil.blankToDefault(field.getType(), ""))
+                .toLowerCase()
+                .replace('_', ' ')
+                .replace('-', ' ');
+        String type = StrUtil.blankToDefault(field.getType(), "").toUpperCase();
+        if (type.contains("MEDIA") || type.contains("IMAGE")
+                || hay.matches(".*\\b(image|photo|img|主图|附图|zoom|swatch)\\b.*")) {
+            return "";
+        }
+        if (hay.matches(".*(product title|\\btitle\\b|product_title|long description|product description|\\bdescription\\b|商品描述|长描述|style description|selling point|highlight|bullet|卖点|product feature|feature\\s*\\d).*")) {
+            return "copy";
+        }
+        if (hay.matches(".*(seller sku|shop sku|vendor style|item code|platform sku|\\bsku\\b|\\bupc\\b|\\bgtin\\b|variation group|\\bgroup\\b|parent sku|qty|inventory|stock|库存|display color|color family|\\bcolor\\b).*")) {
+            return "product";
+        }
+        if (hay.matches(".*(pack(age|aging)?\\s*(length|width|height|weight)|item\\s*(length|width|height|weight)|overall\\s*(length|width|height)|dimension|包装|长宽高|\\blength\\b|\\bwidth\\b|\\bheight\\b|\\bweight\\b|\\bbrand\\b|品牌|material|材质).*")
+                && !hay.matches(".*(font size|file size|battery|screen).*")) {
+            return "attr";
+        }
+        return "";
     }
 
     private static XqCategoryFieldConfigRespVO toFieldConfigVo(
@@ -564,6 +602,7 @@ public class XqListingCatalogService {
                 item.setCode(code);
                 item.setDefaultValue(StrUtil.blankToDefault(obj.getStr("defaultValue"), ""));
                 item.setValueSource(StrUtil.blankToDefault(obj.getStr("valueSource"), ""));
+                item.setZone(normalizeFieldZone(obj.getStr("zone")));
                 map.put(code, item);
             }
         } catch (Exception ignored) {

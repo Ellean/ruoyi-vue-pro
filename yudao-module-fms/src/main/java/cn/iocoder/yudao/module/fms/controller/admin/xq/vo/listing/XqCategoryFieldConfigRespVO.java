@@ -20,6 +20,7 @@ public class XqCategoryFieldConfigRespVO {
         private String code;
         private String defaultValue;
         private String valueSource;
+        private String zone;
     }
 
 }

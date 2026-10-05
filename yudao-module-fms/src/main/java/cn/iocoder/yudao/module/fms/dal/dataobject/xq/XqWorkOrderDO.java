@@ -87,6 +87,10 @@ public class XqWorkOrderDO extends BaseDO {
     private String listingShopName;
     /** 上架分类名 */
     private String listingCategoryName;
+    /** 上架国家代码 */
+    private String listingCountryCode;
+    /** 上架国家名 */
+    private String listingCountryName;
     /** 上架模板字段值 JSON */
     private String listingValuesJson;
     /** 上架调用结果 */
