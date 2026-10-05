@@ -320,8 +320,13 @@ yudao:
       - /jmreport/* # 积木报表，无法携带租户编号
       - /admin-api/xq/work-order/rpa-copy-callback
     ignore-visit-urls:
+      # 拦截器匹配的是 context-path 之后的路径；同时兼容带 /admin-api 前缀的写法
+      - /system/user/profile/**
+      - /system/auth/**
+      - /system/tenant-package/**
       - /admin-api/system/user/profile/**
       - /admin-api/system/auth/**
+      - /admin-api/system/tenant-package/**
     ignore-tables:
     ignore-caches:
       - user_role_ids

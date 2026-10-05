@@ -33,6 +33,7 @@ public interface ErrorCodeConstants {
     ErrorCode ROLE_CAN_NOT_UPDATE_SYSTEM_TYPE_ROLE = new ErrorCode(1_002_002_003, "不能操作类型为系统内置的角色");
     ErrorCode ROLE_IS_DISABLE = new ErrorCode(1_002_002_004, "名字为【{}】的角色已被禁用");
     ErrorCode ROLE_ADMIN_CODE_ERROR = new ErrorCode(1_002_002_005, "标识【{}】不能使用");
+    ErrorCode ROLE_ASSIGN_MENU_NOT_IN_PACKAGE = new ErrorCode(1_002_002_006, "当前租户套餐未开通所选菜单，已拒绝清空角色权限。请先在系统租户下给该套餐勾选菜单后再分配");
 
     // ========== 用户模块 1-002-003-000 ==========
     ErrorCode USER_USERNAME_EXISTS = new ErrorCode(1_002_003_000, "用户账号已经存在");
@@ -117,6 +118,7 @@ public interface ErrorCodeConstants {
     ErrorCode TENANT_PACKAGE_USED = new ErrorCode(1_002_016_001, "租户正在使用该套餐，请给租户重新设置套餐后再尝试删除");
     ErrorCode TENANT_PACKAGE_DISABLE = new ErrorCode(1_002_016_002, "名字为【{}】的租户套餐已被禁用");
     ErrorCode TENANT_PACKAGE_NAME_DUPLICATE = new ErrorCode(1_002_016_003, "已经存在该名字的租户套餐");
+    ErrorCode TENANT_PACKAGE_MENU_EMPTY = new ErrorCode(1_002_016_004, "套餐菜单不能保存为空，否则会清空该套餐下所有租户的权限");
 
     // ========== 社交用户 1-002-018-000 ==========
     ErrorCode SOCIAL_USER_AUTH_FAILURE = new ErrorCode(1_002_018_000, "社交授权失败，原因是：{}");

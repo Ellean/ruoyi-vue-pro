@@ -30,4 +30,22 @@ public class XqWorkOrderUpdateReqVO {
     @Schema(description = "图片提示词 JSON（可选）")
     private String imagePromptJson;
 
+    @Schema(description = "生成主图 URL")
+    private String generatedImageUrl;
+
+    @Schema(description = "上架字段草稿 JSON")
+    private String listingValuesJson;
+
+    @Schema(description = "上架分类 ID")
+    private String listingCategoryId;
+
+    @Schema(description = "上架分类名")
+    private String listingCategoryName;
+
+    @Schema(description = "上架店铺 ID")
+    private String listingShopId;
+
+    @Schema(description = "上架店铺名")
+    private String listingShopName;
+
 }

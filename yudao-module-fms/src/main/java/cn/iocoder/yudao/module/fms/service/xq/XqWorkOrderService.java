@@ -1,10 +1,13 @@
 package cn.iocoder.yudao.module.fms.service.xq;
 
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqAssignableImageUserRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderAssignImageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBatchIdsReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCompleteReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderDispatchReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderImageStatusReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderListReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
@@ -23,6 +26,8 @@ public interface XqWorkOrderService {
 
     List<XqWorkOrderDO> dispatchFromLibrary(@Valid XqWorkOrderDispatchReqVO reqVO, Long userId);
 
+    void attachVariants(List<cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRespVO> list);
+
     XqWorkOrderDO generateCopy(Long id, Long userId);
 
     /** 批量生成文案：领取为当前用户文案任务 */
@@ -30,8 +35,15 @@ public interface XqWorkOrderService {
 
     XqWorkOrderDO generateImage(Long id);
 
+    /** 可分配美工：xq_image 角色用户 + 当前操作人 */
+    List<XqAssignableImageUserRespVO> listAssignableImageUsers(Long operatorUserId);
+
     /** 批量把已完成文案的任务分配给美工 */
     int batchAssignImage(@Valid XqWorkOrderAssignImageReqVO reqVO, Long operatorUserId);
+
+    void updateImageStatus(@Valid XqWorkOrderImageStatusReqVO reqVO);
+
+    Long listWorkOrder(@Valid XqWorkOrderListReqVO reqVO);
 
     Long completeWorkOrder(@Valid XqWorkOrderCompleteReqVO completeReqVO);
 

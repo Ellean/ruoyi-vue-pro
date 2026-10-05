@@ -7,14 +7,22 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderP
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 
 @Mapper
 public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
 
     default PageResult<XqWorkOrderDO> selectPage(XqWorkOrderPageReqVO reqVO) {
-        return selectPage(reqVO, new LambdaQueryWrapperX<XqWorkOrderDO>()
+        List<Long> childParentIds = Collections.emptyList();
+        if (reqVO.getKeyword() != null && !reqVO.getKeyword().isBlank()) {
+            childParentIds = selectParentIdsByChildKeyword(reqVO.getKeyword().trim());
+        }
+        LambdaQueryWrapperX<XqWorkOrderDO> wrapper = new LambdaQueryWrapperX<XqWorkOrderDO>()
                 .likeIfPresent(XqWorkOrderDO::getNo, reqVO.getNo())
                 .likeIfPresent(XqWorkOrderDO::getTitle, reqVO.getTitle())
                 .likeIfPresent(XqWorkOrderDO::getExternalSku, reqVO.getExternalSku())
@@ -23,32 +31,76 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eqIfPresent(XqWorkOrderDO::getAssigneeUserId, reqVO.getAssigneeUserId())
                 .eqIfPresent(XqWorkOrderDO::getCopyUserId, reqVO.getCopyUserId())
                 .eqIfPresent(XqWorkOrderDO::getImageUserId, reqVO.getImageUserId())
+                .eqIfPresent(XqWorkOrderDO::getImageStatus, reqVO.getImageStatus())
                 .eqIfPresent(XqWorkOrderDO::getWorkflowPhase, reqVO.getWorkflowPhase())
                 .eqIfPresent(XqWorkOrderDO::getListingPlatformId, reqVO.getListingPlatformId())
                 .eqIfPresent(XqWorkOrderDO::getListingShopId, reqVO.getListingShopId())
-                .eqIfPresent(XqWorkOrderDO::getListingCategoryId, reqVO.getListingCategoryId())
-                .and(Boolean.TRUE.equals(reqVO.getCopyReady()), w -> w
-
-                        .isNotNull(XqWorkOrderDO::getContentTitle)
-                        .ne(XqWorkOrderDO::getContentTitle, ""))
-                .and(reqVO.getKeyword() != null && !reqVO.getKeyword().isBlank(), w -> w
-                        .like(XqWorkOrderDO::getNo, reqVO.getKeyword())
+                .eqIfPresent(XqWorkOrderDO::getListingCategoryId, reqVO.getListingCategoryId());
+        if (reqVO.getMineUserId() != null) {
+            wrapper.and(w -> w.eq(XqWorkOrderDO::getCopyUserId, reqVO.getMineUserId())
+                    .or()
+                    .eq(XqWorkOrderDO::getAssigneeUserId, reqVO.getMineUserId()));
+        }
+        if (reqVO.getMineImageUserId() != null) {
+            Long uid = reqVO.getMineImageUserId();
+            wrapper.isNotNull(XqWorkOrderDO::getImageUserId)
+                    .and(w -> w.eq(XqWorkOrderDO::getImageUserId, uid)
+                            .or()
+                            .eq(XqWorkOrderDO::getCopyUserId, uid)
+                            .or()
+                            .eq(XqWorkOrderDO::getAssigneeUserId, uid));
+        }
+        if (Boolean.TRUE.equals(reqVO.getListingReady())) {
+            wrapper.in(XqWorkOrderDO::getImageStatus, "done", "generated", "revised");
+        }
+        wrapper.isNull(XqWorkOrderDO::getParentWorkOrderId);
+        if (Boolean.TRUE.equals(reqVO.getCopyReady())) {
+            wrapper.isNotNull(XqWorkOrderDO::getContentTitle)
+                    .ne(XqWorkOrderDO::getContentTitle, "");
+        }
+        if (reqVO.getKeyword() != null && !reqVO.getKeyword().isBlank()) {
+            List<Long> parentIds = childParentIds;
+            wrapper.and(w -> {
+                w.like(XqWorkOrderDO::getNo, reqVO.getKeyword())
                         .or()
                         .like(XqWorkOrderDO::getTitle, reqVO.getKeyword())
                         .or()
-                        .like(XqWorkOrderDO::getExternalSku, reqVO.getKeyword()))
-                .orderByDesc(XqWorkOrderDO::getId));
+                        .like(XqWorkOrderDO::getExternalSku, reqVO.getKeyword());
+                if (cn.hutool.core.collection.CollUtil.isNotEmpty(parentIds)) {
+                    w.or().in(XqWorkOrderDO::getId, parentIds);
+                }
+            });
+        }
+        wrapper.orderByDesc(XqWorkOrderDO::getId);
+        return selectPage(reqVO, wrapper);
     }
 
-    /** 当前登录人待跑文案：进行中、已入个人待跑、尚未 success/running */
+    @Select("SELECT DISTINCT parent_work_order_id FROM xq_work_order "
+            + "WHERE deleted = 0 AND parent_work_order_id IS NOT NULL "
+            + "AND (external_sku LIKE CONCAT('%', #{kw}, '%') "
+            + "OR title LIKE CONCAT('%', #{kw}, '%') OR no LIKE CONCAT('%', #{kw}, '%'))")
+    List<Long> selectParentIdsByChildKeyword(@Param("kw") String kw);
+
+    default List<XqWorkOrderDO> selectByParentIds(Collection<Long> parentIds) {
+        if (parentIds == null || parentIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .in(XqWorkOrderDO::getParentWorkOrderId, parentIds)
+                .orderByAsc(XqWorkOrderDO::getId));
+    }
+
+    /** 当前登录人待跑文案：进行中、已入队；允许重试 fail/running（上次 RPA 中断） */
     default List<XqWorkOrderDO> selectPendingCopyJobs(Long userId, int limit) {
         int n = Math.max(1, Math.min(limit, 20));
         return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getStatus, 10)
-                .eq(XqWorkOrderDO::getCopyUserId, userId)
+                .and(w -> w.eq(XqWorkOrderDO::getCopyUserId, userId)
+                        .or(q -> q.isNull(XqWorkOrderDO::getCopyUserId)
+                                .eq(XqWorkOrderDO::getAssigneeUserId, userId)))
                 .and(w -> w.isNull(XqWorkOrderDO::getRpaCopyStatus)
                         .or()
-                        .notIn(XqWorkOrderDO::getRpaCopyStatus, "success", "running"))
+                        .ne(XqWorkOrderDO::getRpaCopyStatus, "success"))
                 .orderByAsc(XqWorkOrderDO::getId)
                 .last("LIMIT " + n));
     }
@@ -99,6 +151,7 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .set(XqWorkOrderDO::getGeneratedImageUrl, null)
                 .set(XqWorkOrderDO::getCopyUserId, null)
                 .set(XqWorkOrderDO::getImageUserId, null)
+                .set(XqWorkOrderDO::getImageStatus, null)
                 .set(XqWorkOrderDO::getAssigneeUserId, null)
                 .set(XqWorkOrderDO::getProductId, null)
                 .set(XqWorkOrderDO::getProductSku, null)

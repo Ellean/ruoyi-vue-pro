@@ -31,6 +31,12 @@ public class XqWorkOrderDO extends BaseDO {
     private Long sourceId;
     /** Giga 产品 list id */
     private String gigaProductId;
+    /** 主体任务 ID（变体指向主体；主体为空） */
+    private Long parentWorkOrderId;
+    /** 主体 SKU */
+    private String parentSku;
+    /** 变体名称/颜色 */
+    private String variantLabel;
     /** 外部 SKU / Item Code */
     private String externalSku;
     /** 货源/选品标题 */
@@ -67,6 +73,8 @@ public class XqWorkOrderDO extends BaseDO {
     private Long copyUserId;
     /** 美工人员 */
     private Long imageUserId;
+    /** 图片作业：todo / rejected / revised / done */
+    private String imageStatus;
     /** 上架平台 ID（原库 t_giga_listing_platform） */
     private String listingPlatformId;
     /** 上架店铺 ID（原库 t_giga_listing_shop） */
@@ -79,6 +87,10 @@ public class XqWorkOrderDO extends BaseDO {
     private String listingShopName;
     /** 上架分类名 */
     private String listingCategoryName;
+    /** 上架模板字段值 JSON */
+    private String listingValuesJson;
+    /** 上架调用结果 */
+    private String listingResultJson;
     /**
      * 工作流阶段：copy / image / list / done / closed
      */

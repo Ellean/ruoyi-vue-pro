@@ -109,6 +109,11 @@ public interface PermissionService {
     Set<Long> getUserRoleIdListByRoleId(Collection<Long> roleIds);
 
     /**
+     * 获得拥有指定权限标识的用户编号集合（当前租户）
+     */
+    Set<Long> getUserIdListByPermission(String permission);
+
+    /**
      * 获得用户拥有的角色编号集合
      *
      * @param userId 用户编号

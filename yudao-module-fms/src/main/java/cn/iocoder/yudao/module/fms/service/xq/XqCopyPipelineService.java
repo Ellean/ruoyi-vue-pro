@@ -34,6 +34,9 @@ public interface XqCopyPipelineService {
     /** 按 SKU 补齐原文案/原图/规则后返回 RPA 任务包 */
     Map<String, Object> buildCopyDetailBySku(Long userId, String sku);
 
+    /** 按任务 ID 补齐原文案/原图/规则后返回 RPA 任务包 */
+    Map<String, Object> buildCopyDetailById(Long userId, Long workOrderId);
+
     /** 只读源库 Giga 产品（挂起主库事务） */
     XqGigaProductRow readGigaProduct(String gigaProductId, String sku);
 

@@ -19,8 +19,7 @@ public class XqWorkOrderDispatchReqVO {
     @Schema(description = "上架店铺 ID（原库 t_giga_listing_shop，可选）")
     private String listingShopId;
 
-    @Schema(description = "上架分类 ID（原库 t_giga_listing_category）", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "请选择平台分类")
+    @Schema(description = "上架分类 ID（可选，已不再要求）")
     private String listingCategoryId;
 
     @Schema(description = "上架平台名")

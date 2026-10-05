@@ -1,6 +1,9 @@
 package cn.iocoder.yudao.module.fms.controller.admin.xq;
 
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCategoryFieldConfigRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCategoryFieldConfigSaveReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCategoryFieldTemplateRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleSaveReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqImageGenRuleRespVO;
@@ -8,6 +11,7 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqImageGenRule
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqListingCategoryRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqListingPlatformRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqListingShopRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqWorkbenchScopeRespVO;
 import cn.iocoder.yudao.module.fms.service.xq.XqListingCatalogService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -33,7 +37,7 @@ public class XqListingCatalogController {
 
     @GetMapping("/platforms")
     @Operation(summary = "上架平台列表（主库 xq_platform，按用户绑店过滤）")
-    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:product:dispatch', 'xq:work-order:query')")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:template-config:query', 'xq:product:dispatch', 'xq:work-order:query', 'xq:work-order:list')")
     public CommonResult<List<XqListingPlatformRespVO>> listPlatforms() {
         return success(listingCatalogService.listPlatforms());
     }
@@ -41,19 +45,35 @@ public class XqListingCatalogController {
     @GetMapping("/shops")
     @Operation(summary = "上架店铺列表（主库 xq_store，按 xq_user_store 过滤）")
     @Parameter(name = "platformId", description = "业务平台ID（xq_platform.id）")
-    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:product:dispatch', 'xq:work-order:query')")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:template-config:query', 'xq:product:dispatch', 'xq:work-order:query', 'xq:work-order:list')")
     public CommonResult<List<XqListingShopRespVO>> listShops(
             @RequestParam(value = "platformId", required = false) String platformId) {
         return success(listingCatalogService.listShops(platformId));
     }
 
+    @GetMapping("/workbench-scope")
+    @Operation(summary = "平台工作台：当前用户绑定的平台与店铺")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:query', 'xq:work-order:list', 'xq:template-config:query', 'xq:product:dispatch')")
+    public CommonResult<XqWorkbenchScopeRespVO> getWorkbenchScope() {
+        return success(listingCatalogService.getWorkbenchScope());
+    }
+
     @GetMapping("/categories")
     @Operation(summary = "上架分类树（按业务平台解析 sourcePlatformId 后查原库类目）")
     @Parameter(name = "platformId", description = "业务平台ID（xq_platform.id）", required = true)
-    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:product:dispatch', 'xq:work-order:query')")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:template-config:query', 'xq:product:dispatch', 'xq:work-order:query', 'xq:work-order:list')")
     public CommonResult<List<XqListingCategoryRespVO>> listCategories(
             @RequestParam("platformId") String platformId) {
         return success(listingCatalogService.listCategoryTree(platformId));
+    }
+
+    @GetMapping("/category-template")
+    @Operation(summary = "源库类目字段模板（Mirakl/分类属性，不是文案规则）")
+    @Parameter(name = "categoryId", description = "上架分类ID", required = true)
+    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:image-rule:query', 'xq:template-config:query', 'xq:product:dispatch', 'xq:work-order:query', 'xq:work-order:update', 'xq:work-order:list')")
+    public CommonResult<XqCategoryFieldTemplateRespVO> getCategoryFieldTemplate(
+            @RequestParam("categoryId") String categoryId) {
+        return success(listingCatalogService.getCategoryFieldTemplate(categoryId));
     }
 
     @GetMapping("/copy-rules")
@@ -65,7 +85,7 @@ public class XqListingCatalogController {
 
     @GetMapping("/copy-rule")
     @Operation(summary = "获得平台文案规则")
-    @PreAuthorize("@ss.hasPermission('xq:copy-rule:query')")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:copy-rule:query', 'xq:work-order:query', 'xq:work-order:update')")
     public CommonResult<XqCopyGenRuleRespVO> getCopyRule(
             @RequestParam(value = "platformId", required = false, defaultValue = "") String platformId) {
         return success(listingCatalogService.getCopyRule(platformId));
@@ -102,6 +122,32 @@ public class XqListingCatalogController {
     @PreAuthorize("@ss.hasPermission('xq:image-rule:update')")
     public CommonResult<Boolean> saveImageRule(@Valid @RequestBody XqImageGenRuleSaveReqVO reqVO) {
         listingCatalogService.saveImageRule(reqVO);
+        return success(true);
+    }
+
+    @GetMapping("/category-field-configs")
+    @Operation(summary = "列出某平台已配置字段默认值/AI映射的分类")
+    @PreAuthorize("@ss.hasPermission('xq:template-config:query')")
+    public CommonResult<List<XqCategoryFieldConfigRespVO>> listCategoryFieldConfigs(
+            @RequestParam("platformId") String platformId) {
+        return success(listingCatalogService.listCategoryFieldConfigs(platformId));
+    }
+
+    @GetMapping("/category-field-config")
+    @Operation(summary = "获得分类字段默认值与AI映射")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:template-config:query', 'xq:work-order:query', 'xq:work-order:update')")
+    public CommonResult<XqCategoryFieldConfigRespVO> getCategoryFieldConfig(
+            @RequestParam("platformId") String platformId,
+            @RequestParam("categoryId") String categoryId) {
+        return success(listingCatalogService.getCategoryFieldConfig(platformId, categoryId));
+    }
+
+    @PostMapping("/category-field-config")
+    @Operation(summary = "保存分类字段默认值与AI映射（写回原库）")
+    @PreAuthorize("@ss.hasPermission('xq:template-config:update')")
+    public CommonResult<Boolean> saveCategoryFieldConfig(
+            @Valid @RequestBody XqCategoryFieldConfigSaveReqVO reqVO) {
+        listingCatalogService.saveCategoryFieldConfig(reqVO);
         return success(true);
     }
 

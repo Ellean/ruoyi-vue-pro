@@ -198,6 +198,9 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_DISPATCH_EMPTY = new ErrorCode(1_052_200_023, "请先选择要下发的产品");
     ErrorCode XQ_WORK_ORDER_COPY_REQUIRED = new ErrorCode(1_052_200_024, "请先完成文案，再生成图片");
     ErrorCode XQ_WORK_ORDER_IMAGE_REQUIRED = new ErrorCode(1_052_200_025, "请先完成图片，再上架");
+    ErrorCode XQ_WORK_ORDER_IMAGE_STATUS_INVALID = new ErrorCode(1_052_200_028, "图片状态不合法");
+    ErrorCode XQ_WORK_ORDER_NOT_ASSIGNED_IMAGE = new ErrorCode(1_052_200_029, "请先分配美工");
+    ErrorCode XQ_WORK_ORDER_IMAGE_USER_INVALID = new ErrorCode(1_052_200_035, "只能分配给拥有图片作业权限的用户或自己");
     ErrorCode XQ_DISPATCH_LISTING_REQUIRED = new ErrorCode(1_052_200_026, "请先选择上架平台与平台分类");
     ErrorCode XQ_WORK_ORDER_CLOSE_INVALID = new ErrorCode(1_052_200_027, "仅进行中的任务可关闭");
     ErrorCode XQ_RPA_CONFIG_NOT_EXISTS = new ErrorCode(1_052_200_030, "请先保存 RPA 配置");

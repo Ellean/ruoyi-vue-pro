@@ -16,9 +16,12 @@ import org.springframework.web.bind.annotation.*;
 
 import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
+import java.util.HashSet;
 import java.util.Set;
 
+import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
 import static cn.iocoder.yudao.framework.common.pojo.CommonResult.success;
+import static cn.iocoder.yudao.module.system.enums.ErrorCodeConstants.ROLE_ASSIGN_MENU_NOT_IN_PACKAGE;
 
 @Tag(name = "管理后台 - 权限")
 @RestController
@@ -42,8 +45,14 @@ public class PermissionController {
     @Operation(summary = "赋予角色菜单")
     @PreAuthorize("@ss.hasPermission('system:permission:assign-role-menu')")
     public CommonResult<Boolean> assignRoleMenu(@Validated @RequestBody PermissionAssignRoleMenuReqVO reqVO) {
-        // 开启多租户的情况下，需要过滤掉未开通的菜单
+        // 开启多租户的情况下，需要过滤掉未开通的菜单。
+        // 切租户后套餐菜单为空时，过滤结果会变成空集合；若仍保存会把角色权限整表清掉。
+        Set<Long> submitted = reqVO.getMenuIds() == null ? new HashSet<>() : new HashSet<>(reqVO.getMenuIds());
+        reqVO.setMenuIds(new HashSet<>(submitted));
         tenantService.handleTenantMenu(menuIds -> reqVO.getMenuIds().removeIf(menuId -> !CollUtil.contains(menuIds, menuId)));
+        if (CollUtil.isNotEmpty(submitted) && CollUtil.isEmpty(reqVO.getMenuIds())) {
+            throw exception(ROLE_ASSIGN_MENU_NOT_IN_PACKAGE);
+        }
 
         // 执行菜单的分配
         permissionService.assignRoleMenu(reqVO.getRoleId(), reqVO.getMenuIds());

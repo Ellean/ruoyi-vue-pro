@@ -249,6 +249,28 @@ public class PermissionServiceImpl implements PermissionService {
         return convertSet(userRoleMapper.selectListByRoleIds(roleIds), UserRoleDO::getUserId);
     }
 
+    @Override
+    public Set<Long> getUserIdListByPermission(String permission) {
+        if (permission == null || permission.isBlank()) {
+            return Collections.emptySet();
+        }
+        List<Long> menuIds = menuService.getMenuIdListByPermissionFromCache(permission);
+        if (CollUtil.isEmpty(menuIds)) {
+            return Collections.emptySet();
+        }
+        Set<Long> roleIds = new HashSet<>();
+        for (Long menuId : menuIds) {
+            Set<Long> menuRoleIds = getSelf().getMenuRoleIdListByMenuIdFromCache(menuId);
+            if (CollUtil.isNotEmpty(menuRoleIds)) {
+                roleIds.addAll(menuRoleIds);
+            }
+        }
+        if (CollUtil.isEmpty(roleIds)) {
+            return Collections.emptySet();
+        }
+        return getUserRoleIdListByRoleId(roleIds);
+    }
+
     /**
      * 获得用户拥有的角色，并且这些角色是开启状态的
      *

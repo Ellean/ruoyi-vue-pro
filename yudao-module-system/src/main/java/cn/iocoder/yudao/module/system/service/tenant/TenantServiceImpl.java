@@ -2,7 +2,6 @@ package cn.iocoder.yudao.module.system.service.tenant;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.lang.Assert;
-import cn.hutool.core.util.ObjectUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.collection.CollectionUtils;
@@ -154,10 +153,8 @@ public class TenantServiceImpl implements TenantService {
         // 更新租户
         TenantDO updateObj = BeanUtils.toBean(updateReqVO, TenantDO.class);
         tenantMapper.updateById(updateObj);
-        // 如果套餐发生变化，则修改其角色的权限
-        if (ObjectUtil.notEqual(tenant.getPackageId(), updateReqVO.getPackageId())) {
-            updateTenantRoleMenu(tenant.getId(), tenantPackage.getMenuIds());
-        }
+        // 套餐菜单可能在租户创建之后才勾选；每次保存租户都按当前套餐同步角色菜单
+        updateTenantRoleMenu(tenant.getId(), tenantPackage.getMenuIds());
     }
 
     private void validTenantNameDuplicate(String name, Long id) {
@@ -303,10 +300,25 @@ public class TenantServiceImpl implements TenantService {
         if (isSystemTenant(tenant)) { // 系统租户，菜单是全量的
             menuIds = CollectionUtils.convertSet(menuService.getMenuList(), MenuDO::getId);
         } else {
-            menuIds = tenantPackageService.getTenantPackage(tenant.getPackageId()).getMenuIds();
+            menuIds = toLongIdSet(tenantPackageService.getTenantPackage(tenant.getPackageId()).getMenuIds());
         }
         // 执行处理器
         handler.handle(menuIds);
+    }
+
+    private static Set<Long> toLongIdSet(java.util.Collection<?> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return java.util.Collections.emptySet();
+        }
+        Set<Long> ids = new java.util.HashSet<>(raw.size());
+        for (Object id : raw) {
+            if (id instanceof Number) {
+                ids.add(((Number) id).longValue());
+            } else if (id != null && !id.toString().isBlank()) {
+                ids.add(Long.parseLong(id.toString().trim()));
+            }
+        }
+        return ids;
     }
 
     private static boolean isSystemTenant(TenantDO tenant) {

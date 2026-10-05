@@ -20,4 +20,11 @@ public interface PermissionApi extends PermissionCommonApi {
      */
     Set<Long> getUserRoleIdListByRoleIds(Collection<Long> roleIds);
 
+    /**
+     * 获得拥有指定权限标识的用户编号集合（当前租户）
+     * <p>
+     * 路径：permission → 菜单 → 本租户角色 → 用户。不依赖角色 id / code。
+     */
+    Set<Long> getUserIdListByPermission(String permission);
+
 }

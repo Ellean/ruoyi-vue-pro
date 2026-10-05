@@ -23,8 +23,8 @@ public class UserSaveReqVO {
 
     @Schema(description = "用户账号", requiredMode = Schema.RequiredMode.REQUIRED, example = "yudao")
     @NotBlank(message = "用户账号不能为空")
-    @Pattern(regexp = "^[a-zA-Z0-9]{4,30}$", message = "用户账号由 数字、字母 组成")
-    @Size(min = 4, max = 30, message = "用户账号长度为 4-30 个字符")
+    @Pattern(regexp = "^[\\p{L}\\p{N}·._\\-]{1,30}$", message = "用户账号可为中文、字母、数字，1-30 个字符")
+    @Size(min = 1, max = 30, message = "用户账号长度为 1-30 个字符")
     @DiffLogField(name = "用户账号")
     private String username;
 

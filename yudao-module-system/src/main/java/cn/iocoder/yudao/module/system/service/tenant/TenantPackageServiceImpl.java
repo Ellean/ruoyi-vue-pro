@@ -58,6 +58,10 @@ public class TenantPackageServiceImpl implements TenantPackageService {
         validateTenantPackageNameUnique(updateReqVO.getId(), updateReqVO.getName());
         // 更新
         TenantPackageDO updateObj = BeanUtils.toBean(updateReqVO, TenantPackageDO.class);
+        // 切到业务租户后再打开套餐，菜单树会被套餐过滤成空；空保存会清空所有使用该套餐的租户权限
+        if (CollUtil.isEmpty(updateReqVO.getMenuIds()) && CollUtil.isNotEmpty(tenantPackage.getMenuIds())) {
+            throw exception(TENANT_PACKAGE_MENU_EMPTY);
+        }
         tenantPackageMapper.updateById(updateObj);
         // 如果菜单发生变化，则修改每个租户的菜单
         if (!CollUtil.isEqualList(tenantPackage.getMenuIds(), updateReqVO.getMenuIds())) {

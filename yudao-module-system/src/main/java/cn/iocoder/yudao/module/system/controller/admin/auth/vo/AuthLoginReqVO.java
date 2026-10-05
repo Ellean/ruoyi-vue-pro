@@ -23,8 +23,8 @@ public class AuthLoginReqVO extends CaptchaVerificationReqVO {
 
     @Schema(description = "账号", requiredMode = Schema.RequiredMode.REQUIRED, example = "yudaoyuanma")
     @NotEmpty(message = "登录账号不能为空")
-    @Length(min = 4, max = 30, message = "账号长度为 4-30 位")
-    @Pattern(regexp = "^[a-zA-Z0-9]{4,30}$", message = "账号格式为数字以及字母")
+    @Length(min = 1, max = 30, message = "账号长度为 1-30 位")
+    @Pattern(regexp = "^[\\p{L}\\p{N}·._\\-]{1,30}$", message = "账号可为中文、字母、数字")
     private String username;
 
     @Schema(description = "密码", requiredMode = Schema.RequiredMode.REQUIRED, example = "buzhidao")

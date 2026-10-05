@@ -122,7 +122,14 @@
           ELSE NULL
         END AS listedTag,
         COALESCE(l.sync_time, l.create_date, s.sync_time) AS createTime,
-        CONCAT('Giga/', IFNULL(l.source_platform, 'giga')) AS remark
+        CONCAT('Giga/', IFNULL(l.source_platform, 'giga')) AS remark,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mainColor')) AS mainColor,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.upc')) AS upc,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.lengthCm')) AS DECIMAL(14,2)) AS lengthCm,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.widthCm')) AS DECIMAL(14,2)) AS widthCm,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.heightCm')) AS DECIMAL(14,2)) AS heightCm,
+        JSON_EXTRACT(s.detail_json, '$.associateProductList') AS associateProductListJson,
+        JSON_EXTRACT(s.detail_json, '$.associateProductInfo') AS associateProductInfoJson
     </sql>
 
     <sql id="DetailColumns">
@@ -172,7 +179,14 @@
           ELSE NULL
         END AS listedTag,
         COALESCE(l.sync_time, l.create_date, s.sync_time) AS createTime,
-        CONCAT('Giga/', IFNULL(l.source_platform, 'giga')) AS remark
+        CONCAT('Giga/', IFNULL(l.source_platform, 'giga')) AS remark,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mainColor')) AS mainColor,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.upc')) AS upc,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.lengthCm')) AS DECIMAL(14,2)) AS lengthCm,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.widthCm')) AS DECIMAL(14,2)) AS widthCm,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.heightCm')) AS DECIMAL(14,2)) AS heightCm,
+        JSON_EXTRACT(s.detail_json, '$.associateProductList') AS associateProductListJson,
+        JSON_EXTRACT(s.detail_json, '$.associateProductInfo') AS associateProductInfoJson
     </sql>
 
     <!-- 无筛选 COUNT：DISTINCT sku + EXISTS，避免 JOIN 放大与 LOB 扫描 -->
@@ -344,6 +358,53 @@
         WHERE l.sku = #{sku}
         ORDER BY l.sync_time DESC, l.id DESC
         LIMIT 1
+    </select>
+
+    <select id="selectListBySkus" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
+        SELECT *
+        FROM (
+            SELECT
+            <include refid="ListColumns"/>,
+            ROW_NUMBER() OVER (PARTITION BY l.sku ORDER BY l.sync_time DESC, l.id DESC) AS rn
+            FROM t_gigab2b_product_list l
+            INNER JOIN (
+              SELECT id, sku, product_name, sync_time,
+                     price, exclusive_price, discounted_price, currency,
+                     seller_available_inventory, buyer_available_inventory, sku_available,
+                     detail_json, price_json, inventory_json
+              FROM (
+                SELECT s1.id, s1.sku, s1.product_name, s1.sync_time,
+                       s1.price, s1.exclusive_price, s1.discounted_price, s1.currency,
+                       s1.seller_available_inventory, s1.buyer_available_inventory, s1.sku_available,
+                       s1.detail_json, s1.price_json, s1.inventory_json,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY s1.sku
+                         ORDER BY
+                           (CASE
+                              WHEN IFNULL(s1.price,0) &gt; 0
+                                OR IFNULL(s1.discounted_price,0) &gt; 0
+                                OR IFNULL(s1.exclusive_price,0) &gt; 0 THEN 2
+                              WHEN s1.price_json IS NOT NULL
+                                AND s1.price_json NOT IN ('', '{}', 'null') THEN 1
+                              ELSE 0
+                            END) DESC,
+                           s1.sync_time DESC,
+                           s1.id DESC
+                       ) AS rn
+                FROM t_gigab2b_product_snapshot s1
+                WHERE s1.sku IN
+                <foreach collection="skus" item="sku" open="(" separator="," close=")">
+                    #{sku}
+                </foreach>
+              ) sx
+              WHERE sx.rn = 1
+            ) s ON s.sku = l.sku
+            WHERE l.sku IN
+            <foreach collection="skus" item="sku" open="(" separator="," close=")">
+                #{sku}
+            </foreach>
+        ) t
+        WHERE t.rn = 1
     </select>
 
 </mapper>

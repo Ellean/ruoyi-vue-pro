@@ -76,7 +76,13 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         String sku = StrUtil.blankToDefault(reqVO.getSku(), "");
         String title0 = StrUtil.blankToDefault(reqVO.getTitle(), sku);
         String original = StrUtil.blankToDefault(reqVO.getOriginalCopy(), "");
-        boolean mock = useMock(reqVO.getMock());
+        boolean mock = Boolean.TRUE.equals(reqVO.getMock());
+        Map<String, Object> observations = reqVO.getImageObservations() == null
+                ? Map.of() : reqVO.getImageObservations();
+        List<String> sourceImages = CollUtil.emptyIfNull(reqVO.getSourceImages());
+        if (!mock && observations.isEmpty()) {
+            throw exception(XQ_RPA_AI_FAIL, "无实拍识图结果，拒绝空写");
+        }
 
         if (mock) {
             return mockCopy(sku, title0, original, rule);
@@ -84,16 +90,20 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
 
         String system = "你是亚马逊/跨境电商文案优化助手。只输出一个完整 JSON，禁止截断、禁止 markdown。"
                 + "字段：{\"title\":\"完整英文标题\",\"sellingPoints\":[\"完整英文句子\"],"
-                + "\"description\":\"完整英文长描述\",\"highlightStyle\":\"完整中文突出卖点摘要\"}。"
-                + "title、sellingPoints、description 必须是完整英文句子，以句号结尾，不要半截词。"
-                + "sellingPoints 条数必须等于指定卖点数，每条独立成句。"
-                + "description 是 Product Description：4到8句、不少于80个英文单词，写清材质/尺寸/场景/差异点。"
-                + "highlightStyle 用中文完整句子概括突出卖点，不要英文、不要半截。"
-                + "不要编造认证/品牌。";
+                + "\"description\":\"完整英文长描述\",\"highlightStyle\":[\"中文标签\"]}。"
+                + "必须依据 imageObservations（实拍识图结果）和 originalCopy 写，禁止编造图上没有的材质、配件、尺寸、认证。"
+                + "图上看不到的信息不要写进卖点和描述。"
+                + "title、sellingPoints、description 必须是完整英文句子，以句号结尾。"
+                + "sellingPoints 条数必须等于指定卖点数。"
+                + "description 4到8句、不少于80个英文单词。"
+                + "highlightStyle 必须是 4 到 8 个中文短标签（每项 2 到 8 字），来自实拍风格/材质/场景，给生图勾选。"
+                + "禁止把 highlightStyle 写成一整句话，禁止英文标签。";
         Map<String, Object> user = new LinkedHashMap<>();
         user.put("sku", sku);
         user.put("productTitle", title0);
         user.put("originalCopy", StrUtil.maxLength(original, 4000));
+        user.put("imageObservations", observations);
+        user.put("sourceImageCount", sourceImages.size());
         user.put("featureCount", rule.featureCount);
         user.put("rules", Map.of(
                 "generateTitle", rule.generateTitle,
@@ -115,15 +125,15 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         String title = clipAtSentence(StrUtil.blankToDefault(parsed.getStr("title"), title0), rule.titleMaxLen);
         String desc = clipAtSentence(StrUtil.blankToDefault(parsed.getStr("description"), ""),
                 Math.max(rule.descriptionMaxLen, 2000));
-        String highlight = clipAtSentence(StrUtil.blankToDefault(parsed.getStr("highlightStyle"), ""), 800);
-        if (StrUtil.isBlank(highlight) && StrUtil.isNotBlank(desc)) {
-            highlight = desc;
+        List<String> highlightTags = normalizeHighlightTags(parsed.get("highlightStyle"));
+        if (highlightTags.isEmpty()) {
+            highlightTags = fallbackHighlightTags(points, desc);
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("title", title);
         out.put("sellingPoints", points);
         out.put("description", desc);
-        out.put("highlightStyle", highlight);
+        out.put("highlightStyle", highlightTags);
         return out;
     }
 
@@ -163,6 +173,8 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         Map<String, Object> copy = reqVO.getCopyResult() == null ? Map.of() : reqVO.getCopyResult();
         Map<String, Object> imageRule = reqVO.getImageRule() == null ? Map.of() : reqVO.getImageRule();
         List<String> points = normalizePoints(copy.get("sellingPoints"));
+        List<String> styleTags = normalizeHighlightTags(copy.get("highlightStyle"));
+        String styleText = String.join("、", styleTags);
         String baseHint = str(imageRule.get("promptText"));
         String neg = str(imageRule.get("negativePrompt"));
         boolean mock = useMock(reqVO.getMock());
@@ -174,7 +186,7 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
             String t = StrUtil.blankToDefault(str(meta.get("imageType")), "other").toLowerCase();
             String marker = StrUtil.blankToDefault(str(meta.get("marker")), TYPE_MARKERS.getOrDefault(t, "其它参考图"));
             String nameLine = nameLineOf(t, idx);
-            String point = points.isEmpty() ? "product highlight" : points.get(idx % points.size());
+            String point = points.isEmpty() ? "产品卖点" : points.get(idx % points.size());
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("index", idx);
             row.put("imageType", t);
@@ -198,9 +210,11 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         }
         Map<Integer, String> promptByIndex = new LinkedHashMap<>();
         if (!mock) {
-            String system = "你是电商生图提示词专家。只根据 images[].imageType 与卖点写提示词，不要假设看过原图像素。"
-                    + "只返回 JSON：[{\"index\":0,\"imageType\":\"scene\",\"promptText\":\"第一行图片名称\\n英文提示\"}]。"
-                    + "promptText 第一行必须是中文图名（主图-卖点/尺寸图/细节图/场景图/包装图）。";
+            String system = "你是电商生图提示词专家。只根据 images[].imageType、卖点和已选中文风格标签写提示词。"
+                    + "不要假设看过原图像素。只返回 JSON："
+                    + "[{\"index\":0,\"imageType\":\"scene\",\"promptText\":\"场景图\\n中文提示词\"}]。"
+                    + "promptText 必须全部中文：第一行是图名（主图-卖点/尺寸图/细节图/场景图/包装图/参考图），"
+                    + "后面用中文写构图、材质、光线、背景、要突出的标签。禁止英文句子、禁止半截词。";
             Map<String, Object> user = new LinkedHashMap<>();
             user.put("title", copy.get("title"));
             user.put("highlightStyle", copy.get("highlightStyle"));
@@ -241,11 +255,12 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
             String point = str(row.get("sellingPoint"));
             String prompt = promptByIndex.get(idx);
             if (StrUtil.isBlank(prompt)) {
-                prompt = nameLine + "\nType=" + t + "; Marker=" + marker + "; Focus=" + point
-                        + ". Photorealistic ecommerce image, English on-image text only if needed. RuleHint="
-                        + StrUtil.maxLength(baseHint, 180);
+                prompt = nameLine + "\n电商实拍风，中文构图说明。"
+                        + (StrUtil.isNotBlank(styleText) ? " 风格标签：" + styleText + "。" : "")
+                        + marker + "。光线干净，产品居中，适合跨境主图。"
+                        + (StrUtil.isNotBlank(baseHint) ? " 规则：" + StrUtil.maxLength(baseHint, 120) : "");
                 if ("dimension".equals(t)) {
-                    prompt += " Bind product photo + dimension annotation roles clearly.";
+                    prompt += " 产品外形与尺寸标注同框，标注清晰可读。";
                 }
             } else if (!prompt.startsWith(nameLine)) {
                 prompt = nameLine + "\n" + prompt;
@@ -339,7 +354,7 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         out.put("title", title);
         out.put("sellingPoints", points);
         out.put("description", desc);
-        out.put("highlightStyle", "Clean modern ecommerce highlight: material, size fit, daily scene.");
+        out.put("highlightStyle", List.of("简洁电商风", "材质特写", "日常使用场景"));
         return out;
     }
 
@@ -467,6 +482,61 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
             }
         }
         return out;
+    }
+
+    /** 突出风格：中文短标签，不是一整句话 */
+    private static List<String> normalizeHighlightTags(Object raw) {
+        List<String> tags = new ArrayList<>();
+        if (raw == null) {
+            return tags;
+        }
+        if (raw instanceof List<?> list) {
+            for (Object o : list) {
+                addHighlightTag(tags, String.valueOf(o));
+            }
+            return tags;
+        }
+        String text = String.valueOf(raw).trim();
+        if (text.startsWith("[")) {
+            try {
+                return normalizeHighlightTags(JSONUtil.parseArray(text));
+            } catch (Exception ignored) {
+                // fallthrough
+            }
+        }
+        String[] parts = text.split("[,，、;；|/\\n]+");
+        if (parts.length >= 2) {
+            for (String part : parts) {
+                addHighlightTag(tags, part);
+            }
+            return tags;
+        }
+        // 一整句话：不直接当标签
+        return tags;
+    }
+
+    private static void addHighlightTag(List<String> tags, String raw) {
+        String s = StrUtil.trim(raw).replaceAll("[。.!！?？\"“”']", "");
+        if (StrUtil.isBlank(s) || s.length() > 12) {
+            return;
+        }
+        if (!tags.contains(s)) {
+            tags.add(s);
+        }
+    }
+
+    private static List<String> fallbackHighlightTags(List<String> points, String desc) {
+        List<String> tags = new ArrayList<>();
+        tags.add("电商实拍");
+        tags.add("材质特写");
+        tags.add("日常使用");
+        if (CollUtil.isNotEmpty(points)) {
+            addHighlightTag(tags, StrUtil.maxLength(points.get(0), 8));
+        }
+        if (StrUtil.containsIgnoreCase(desc, "ceramic") || StrUtil.contains(desc, "陶瓷")) {
+            addHighlightTag(tags, "釉面陶瓷");
+        }
+        return tags;
     }
 
     private static List<String> padPoints(List<String> points, int n, int maxLen) {

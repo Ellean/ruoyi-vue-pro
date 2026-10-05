@@ -105,7 +105,11 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         input.put("listingCategoryId", order.getListingCategoryId());
         input.put("listingCategoryName", order.getListingCategoryName());
         input.put("originalCopy", StrUtil.blankToDefault(order.getSourceDescription(), ""));
-        input.put("sourceImages", parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl()));
+        List<String> sourceImages = parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl());
+        if (sourceImages.isEmpty()) {
+            throw exception(XQ_RPA_AI_FAIL, "任务没有参考图，无法跑文案");
+        }
+        input.put("sourceImages", sourceImages);
 
         Map<String, Object> copyRulePayload = new LinkedHashMap<>();
         copyRulePayload.put("platformId", copyRule.getPlatformId());
@@ -125,9 +129,10 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         // 流水线步骤说明（给 RPA / 大模型 system 用）
         input.put("steps", List.of(
                 "1.load_copy_rule: 先加载文案规则作为硬约束（字数/卖点数/标点/平台规范）",
-                "2.generate_copy: 结合原文案优化标题/卖点/突出内容/长描述（服务端不下载原图）",
-                "3.classify_images: RPA 本机下载 sourceImages 后识图分型",
-                "4.generate_image_prompts: RPA 按本地原图+卖点写提示词；尺寸图须绑定产品原图+标注图"
+                "2.download_images: RPA 必须先把 sourceImages 下到本机 Main Images",
+                "3.vision_observe: 本机识图，产出 imageObservations，禁止空写",
+                "4.generate_copy: 按实拍观察+原文案写标题/卖点/中文风格标签/长描述",
+                "5.classify_and_prompt: 按实拍分型，中文提示词，每条带 imageUrl 参考图"
         ));
 
         String base = StrUtil.removeSuffix(StrUtil.blankToDefault(callbackBaseUrl, ""), "/");
@@ -150,6 +155,9 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
             throw exception(XQ_WORK_ORDER_STATUS_INVALID);
         }
         enrichSourceIfNeeded(order);
+        if (parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl()).isEmpty()) {
+            throw exception(XQ_RPA_AI_FAIL, "任务没有参考图，无法跑文案");
+        }
         workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getId, order.getId())
                 .set(XqWorkOrderDO::getCopyUserId, userId)
@@ -220,7 +228,6 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public List<Map<String, Object>> pullCopyJobs(Long userId, Integer limit) {
         if (userId == null) {
             throw exception(XQ_RPA_CONFIG_INVALID);
@@ -230,6 +237,13 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         List<Map<String, Object>> jobs = new ArrayList<>();
         for (XqWorkOrderDO order : orders) {
             enrichSourceIfNeeded(order);
+            if (parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl()).isEmpty()) {
+                workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+                        .eq(XqWorkOrderDO::getId, order.getId())
+                        .set(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_FAIL)
+                        .set(XqWorkOrderDO::getRpaCopyError, "任务没有参考图，无法跑文案"));
+                continue;
+            }
             workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
                     .eq(XqWorkOrderDO::getId, order.getId())
                     .set(XqWorkOrderDO::getCopyUserId, userId)
@@ -238,7 +252,15 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                     .set(XqWorkOrderDO::getWorkflowPhase, "copy")
                     .set(XqWorkOrderDO::getAssigneeUserId,
                             order.getAssigneeUserId() == null ? userId : order.getAssigneeUserId()));
-            jobs.add(buildJobInput(order, userId));
+            try {
+                jobs.add(buildJobInput(order, userId));
+            } catch (Exception ex) {
+                workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+                        .eq(XqWorkOrderDO::getId, order.getId())
+                        .set(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_FAIL)
+                        .set(XqWorkOrderDO::getRpaCopyError,
+                                StrUtil.maxLength(StrUtil.blankToDefault(ex.getMessage(), "组包失败"), 500)));
+            }
         }
         return jobs;
     }
@@ -249,6 +271,19 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
             throw exception(XQ_WORK_ORDER_NOT_EXISTS);
         }
         XqWorkOrderDO order = workOrderMapper.selectDoingCopyBySku(userId, sku.trim());
+        if (order == null) {
+            throw exception(XQ_WORK_ORDER_NOT_EXISTS);
+        }
+        enrichSourceIfNeeded(order);
+        return buildJobInput(order, userId);
+    }
+
+    @Override
+    public Map<String, Object> buildCopyDetailById(Long userId, Long workOrderId) {
+        if (userId == null || workOrderId == null) {
+            throw exception(XQ_WORK_ORDER_NOT_EXISTS);
+        }
+        XqWorkOrderDO order = workOrderMapper.selectById(workOrderId);
         if (order == null) {
             throw exception(XQ_WORK_ORDER_NOT_EXISTS);
         }
@@ -304,16 +339,24 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         copyResult.putIfAbsent("title", title);
         copyResult.putIfAbsent("description", description);
         copyResult.putIfAbsent("sellingPoints", selling);
-        if (!copyResult.containsKey("highlightStyle") && StrUtil.isNotBlank(description)) {
-            copyResult.put("highlightStyle", description);
+        Object hs = copyResult.get("highlightStyle");
+        if (hs instanceof String s && s.equals(description)) {
+            copyResult.remove("highlightStyle");
         }
 
         String imagePromptJson = "[]";
+        List<String> promptUrls = new ArrayList<>();
         if (CollUtil.isNotEmpty(reqVO.getImagePrompts())) {
             imagePromptJson = JSONUtil.toJsonStr(reqVO.getImagePrompts());
+            for (Map<String, Object> item : reqVO.getImagePrompts()) {
+                String url = str(item.get("imageUrl"));
+                if (StrUtil.startWithAny(url, "http://", "https://")) {
+                    promptUrls.add(url);
+                }
+            }
         }
 
-        workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+        LambdaUpdateWrapper<XqWorkOrderDO> done = new LambdaUpdateWrapper<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getId, order.getId())
                 .set(XqWorkOrderDO::getContentTitle, title)
                 .set(XqWorkOrderDO::getContentSellingPoints, selling)
@@ -323,7 +366,14 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                 .set(XqWorkOrderDO::getRpaCopyError, null)
                 .set(XqWorkOrderDO::getRpaCopyWorkUuid,
                         StrUtil.blankToDefault(reqVO.getWorkUuid(), order.getRpaCopyWorkUuid()))
-                .set(XqWorkOrderDO::getWorkflowPhase, "image"));
+                .set(XqWorkOrderDO::getWorkflowPhase, "image");
+        if (StrUtil.isBlank(order.getSourceImageUrls()) && !promptUrls.isEmpty()) {
+            done.set(XqWorkOrderDO::getSourceImageUrls, JSONUtil.toJsonStr(promptUrls));
+            if (StrUtil.isBlank(order.getCoverUrl())) {
+                done.set(XqWorkOrderDO::getCoverUrl, promptUrls.get(0));
+            }
+        }
+        workOrderMapper.update(null, done);
     }
 
     /** 下发后补齐原文案/原图；生成前再兜底一次 */
@@ -394,16 +444,33 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
     private static List<String> parseImageUrls(String json, String cover) {
         Set<String> set = new LinkedHashSet<>();
         if (StrUtil.isNotBlank(cover)) {
-            set.add(cover.trim());
+            String c = cover.trim();
+            if (c.startsWith("//")) {
+                c = "https:" + c;
+            }
+            if (c.startsWith("http://") || c.startsWith("https://")) {
+                set.add(c);
+            }
         }
         if (StrUtil.isNotBlank(json) && !"null".equalsIgnoreCase(json)) {
             try {
                 if (json.trim().startsWith("[")) {
                     JSONArray arr = JSONUtil.parseArray(json);
                     for (Object o : arr) {
-                        String url = StrUtil.trim(String.valueOf(o));
+                        String url;
+                        if (o instanceof JSONObject jo) {
+                            url = StrUtil.blankToDefault(jo.getStr("url"),
+                                    StrUtil.blankToDefault(jo.getStr("imageUrl"), jo.getStr("src")));
+                        } else {
+                            url = StrUtil.trim(String.valueOf(o));
+                        }
                         if (StrUtil.isNotBlank(url) && !"null".equalsIgnoreCase(url)) {
-                            set.add(url);
+                            if (url.startsWith("//")) {
+                                url = "https:" + url;
+                            }
+                            if (url.startsWith("http://") || url.startsWith("https://")) {
+                                set.add(url);
+                            }
                         }
                     }
                 }

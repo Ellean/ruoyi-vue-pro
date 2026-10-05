@@ -37,5 +37,20 @@ public class XqProductRespVO {
     private Integer status;
     private String remark;
     private LocalDateTime createTime;
+    private String mainColor;
+    private List<Variant> variants = new ArrayList<>();
+
+    @Data
+    public static class Variant {
+        private String id;
+        private String sku;
+        private String itemCode;
+        private String name;
+        private String imageUrl;
+        private String mainColor;
+        private Integer qtyAvailable;
+        private BigDecimal price;
+        private BigDecimal discountedPrice;
+    }
 
 }

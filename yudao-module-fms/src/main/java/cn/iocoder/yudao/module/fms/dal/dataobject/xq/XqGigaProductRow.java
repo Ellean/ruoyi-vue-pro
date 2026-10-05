@@ -37,5 +37,16 @@ public class XqGigaProductRow {
     private String listedTag;
     private LocalDateTime createTime;
     private String remark;
+    /** detail_json.mainColor */
+    private String mainColor;
+    /** detail_json.upc */
+    private String upc;
+    private java.math.BigDecimal lengthCm;
+    private java.math.BigDecimal widthCm;
+    private java.math.BigDecimal heightCm;
+    /** detail_json.associateProductList JSON */
+    private String associateProductListJson;
+    /** detail_json.associateProductInfo JSON */
+    private String associateProductInfoJson;
 
 }

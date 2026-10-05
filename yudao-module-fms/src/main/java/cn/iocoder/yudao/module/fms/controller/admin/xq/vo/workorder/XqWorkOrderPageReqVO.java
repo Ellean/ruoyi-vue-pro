@@ -54,4 +54,16 @@ public class XqWorkOrderPageReqVO extends PageParam {
     @Schema(description = "认领人", hidden = true)
     private Long assigneeUserId;
 
+    @Schema(description = "我的文案：文案领取人或下发人")
+    private Long mineUserId;
+
+    @Schema(description = "我的图片：美工本人，或分配人（仍能看到已分配任务）")
+    private Long mineImageUserId;
+
+    @Schema(description = "图片作业状态 todo/rejected/revised/done")
+    private String imageStatus;
+
+    @Schema(description = "待上架：图片已出图/已完成且尚未提交")
+    private Boolean listingReady;
+
 }

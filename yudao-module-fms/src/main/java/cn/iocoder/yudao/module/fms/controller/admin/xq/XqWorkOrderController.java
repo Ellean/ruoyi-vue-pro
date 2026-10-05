@@ -3,10 +3,13 @@ package cn.iocoder.yudao.module.fms.controller.admin.xq;
 import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqAssignableImageUserRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderAssignImageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBatchIdsReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCompleteReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderDispatchReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderImageStatusReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderListReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyCallbackReqVO;
@@ -44,17 +47,23 @@ public class XqWorkOrderController {
 
     @GetMapping("/page")
     @Operation(summary = "工作台任务分页")
-    @PreAuthorize("@ss.hasPermission('xq:work-order:query')")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:query', 'xq:work-order:my-copy', 'xq:work-order:my-image', 'xq:work-order:list')")
     public CommonResult<PageResult<XqWorkOrderRespVO>> getWorkOrderPage(@Valid XqWorkOrderPageReqVO pageReqVO) {
         PageResult<XqWorkOrderDO> page = workOrderService.getWorkOrderPage(pageReqVO);
-        return success(BeanUtils.toBean(page, XqWorkOrderRespVO.class));
+        PageResult<XqWorkOrderRespVO> vo = BeanUtils.toBean(page, XqWorkOrderRespVO.class);
+        workOrderService.attachVariants(vo.getList());
+        return success(vo);
     }
 
     @GetMapping("/get")
     @Operation(summary = "获得工作台任务")
     @PreAuthorize("@ss.hasPermission('xq:work-order:query')")
     public CommonResult<XqWorkOrderRespVO> getWorkOrder(@RequestParam("id") Long id) {
-        return success(BeanUtils.toBean(workOrderService.getWorkOrder(id), XqWorkOrderRespVO.class));
+        XqWorkOrderRespVO vo = BeanUtils.toBean(workOrderService.getWorkOrder(id), XqWorkOrderRespVO.class);
+        if (vo != null && vo.getParentWorkOrderId() == null) {
+            workOrderService.attachVariants(java.util.List.of(vo));
+        }
+        return success(vo);
     }
 
     @PostMapping("/dispatch")
@@ -105,10 +114,14 @@ public class XqWorkOrderController {
     }
 
     @GetMapping("/rpa-copy-detail")
-    @Operation(summary = "RPA：按 SKU 拉文案详情（原文案/原图/规则）")
-    @Parameter(name = "sku", description = "Item Code / SKU", required = true)
+    @Operation(summary = "RPA：按任务或 SKU 拉文案详情（原文案/原图/规则）")
     @PreAuthorize("@ss.hasPermission('xq:work-order:query')")
-    public CommonResult<java.util.Map<String, Object>> rpaCopyDetail(@RequestParam("sku") String sku) {
+    public CommonResult<java.util.Map<String, Object>> rpaCopyDetail(
+            @RequestParam(value = "sku", required = false) String sku,
+            @RequestParam(value = "workOrderId", required = false) Long workOrderId) {
+        if (workOrderId != null) {
+            return success(copyPipelineService.buildCopyDetailById(getLoginUserId(), workOrderId));
+        }
         return success(copyPipelineService.buildCopyDetailBySku(getLoginUserId(), sku));
     }
 
@@ -120,11 +133,33 @@ public class XqWorkOrderController {
         return success(true);
     }
 
+    @GetMapping("/assignable-image-users")
+    @Operation(summary = "可分配美工列表（拥有我的图片权限的用户 + 自己）")
+    @PreAuthorize("@ss.hasPermission('xq:work-order:assign-image')")
+    public CommonResult<List<XqAssignableImageUserRespVO>> listAssignableImageUsers() {
+        return success(workOrderService.listAssignableImageUsers(getLoginUserId()));
+    }
+
     @PostMapping("/batch-assign-image")
     @Operation(summary = "批量分配美工")
     @PreAuthorize("@ss.hasPermission('xq:work-order:assign-image')")
     public CommonResult<Integer> batchAssignImage(@Valid @RequestBody XqWorkOrderAssignImageReqVO reqVO) {
         return success(workOrderService.batchAssignImage(reqVO, getLoginUserId()));
+    }
+
+    @PostMapping("/image-status")
+    @Operation(summary = "更新图片作业状态（未完成/已驳回/已修改/已完成）")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:update', 'xq:work-order:my-image')")
+    public CommonResult<Boolean> updateImageStatus(@Valid @RequestBody XqWorkOrderImageStatusReqVO reqVO) {
+        workOrderService.updateImageStatus(reqVO);
+        return success(true);
+    }
+
+    @PostMapping("/list")
+    @Operation(summary = "提交上架（模板字段 + 入库）")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:list', 'xq:work-order:complete')")
+    public CommonResult<Long> listWorkOrder(@Valid @RequestBody XqWorkOrderListReqVO reqVO) {
+        return success(workOrderService.listWorkOrder(reqVO));
     }
 
     @PostMapping("/generate-image")

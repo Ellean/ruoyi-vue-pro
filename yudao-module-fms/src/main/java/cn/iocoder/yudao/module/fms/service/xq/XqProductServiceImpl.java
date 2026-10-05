@@ -70,15 +70,6 @@ public class XqProductServiceImpl implements XqProductService {
     }
 
     @Override
-    public XqProductRespVO getProduct(String id) {
-        XqGigaProductRow row = gigaProductMapper.selectById(id);
-        if (row == null) {
-            throw exception(XQ_PRODUCT_NOT_EXISTS);
-        }
-        return toResp(row, true);
-    }
-
-    @Override
     public PageResult<XqProductRespVO> getProductPage(XqProductPageReqVO pageReqVO) {
         Collection<Long> categoryIds = null;
         if (pageReqVO.getGigaCategoryId() != null) {
@@ -127,7 +118,19 @@ public class XqProductServiceImpl implements XqProductService {
                 list.add(toResp(row, false));
             }
         }
+        hydrateVariantCovers(list);
         return new PageResult<>(list, total);
+    }
+
+    @Override
+    public XqProductRespVO getProduct(String id) {
+        XqGigaProductRow row = gigaProductMapper.selectById(id);
+        if (row == null) {
+            throw exception(XQ_PRODUCT_NOT_EXISTS);
+        }
+        XqProductRespVO vo = toResp(row, true);
+        hydrateVariantDetails(vo, row);
+        return vo;
     }
 
     private XqProductRespVO toResp(XqGigaProductRow row, boolean withGallery) {
@@ -156,7 +159,114 @@ public class XqProductServiceImpl implements XqProductService {
                 vo.setImageCount(0);
             }
         }
+        vo.setMainColor(row.getMainColor());
+        vo.setVariants(buildVariantStubs(row));
         return vo;
+    }
+
+    private List<XqProductRespVO.Variant> buildVariantStubs(XqGigaProductRow row) {
+        List<XqProductRespVO.Variant> out = new ArrayList<>();
+        String self = StrUtil.blankToDefault(row.getSku(), row.getItemCode());
+        List<String> family = XqGigaAssociateSupport.familySkus(self, row.getAssociateProductListJson(),
+                row.getAssociateProductInfoJson());
+        Map<String, String> names = XqGigaAssociateSupport.parseInfoNames(row.getAssociateProductInfoJson());
+        for (String sku : family) {
+            if (StrUtil.equals(sku, self)) {
+                continue;
+            }
+            XqProductRespVO.Variant v = new XqProductRespVO.Variant();
+            v.setSku(sku);
+            v.setItemCode(sku);
+            v.setName(XqGigaAssociateSupport.variantLabel(sku, null, row.getAssociateProductInfoJson()));
+            if (names.containsKey(sku)) {
+                v.setMainColor(names.get(sku));
+            }
+            out.add(v);
+        }
+        return out;
+    }
+
+    private void hydrateVariantCovers(List<XqProductRespVO> list) {
+        Set<String> skus = new LinkedHashSet<>();
+        for (XqProductRespVO vo : list) {
+            for (XqProductRespVO.Variant v : vo.getVariants()) {
+                if (StrUtil.isNotBlank(v.getSku())) {
+                    skus.add(v.getSku());
+                }
+            }
+        }
+        if (skus.isEmpty()) {
+            return;
+        }
+        Map<String, XqGigaProductRow> bySku = new LinkedHashMap<>();
+        for (XqGigaProductRow row : gigaProductMapper.selectListBySkus(skus)) {
+            bySku.put(row.getSku(), row);
+        }
+        for (XqProductRespVO vo : list) {
+            for (XqProductRespVO.Variant v : vo.getVariants()) {
+                XqGigaProductRow row = bySku.get(v.getSku());
+                if (row == null) {
+                    continue;
+                }
+                v.setId(row.getId());
+                v.setImageUrl(row.getImageUrl());
+                v.setQtyAvailable(row.getQtyAvailable());
+                v.setPrice(row.getPrice());
+                v.setDiscountedPrice(row.getDiscountedPrice());
+                v.setMainColor(StrUtil.blankToDefault(row.getMainColor(), v.getMainColor()));
+                if (StrUtil.isBlank(v.getName()) || v.getName().equals(v.getSku())) {
+                    v.setName(XqGigaAssociateSupport.variantLabel(
+                            v.getSku(), row.getMainColor(), row.getAssociateProductInfoJson()));
+                }
+            }
+        }
+    }
+
+    private void hydrateVariantDetails(XqProductRespVO vo, XqGigaProductRow row) {
+        List<XqProductRespVO.Variant> stubs = vo.getVariants();
+        if (stubs == null || stubs.isEmpty()) {
+            stubs = buildVariantStubs(row);
+        }
+        List<String> keys = new ArrayList<>();
+        for (XqProductRespVO.Variant v : stubs) {
+            if (StrUtil.isNotBlank(v.getSku())) {
+                keys.add(v.getSku());
+            }
+            if (StrUtil.isNotBlank(v.getItemCode()) && !StrUtil.equals(v.getItemCode(), v.getSku())) {
+                keys.add(v.getItemCode());
+            }
+        }
+        if (keys.isEmpty()) {
+            vo.setVariants(stubs);
+            return;
+        }
+        Map<String, XqGigaProductRow> byKey = new LinkedHashMap<>();
+        for (XqGigaProductRow sib : gigaProductMapper.selectListBySkus(keys)) {
+            byKey.put(sib.getSku(), sib);
+            if (StrUtil.isNotBlank(sib.getItemCode())) {
+                byKey.putIfAbsent(sib.getItemCode(), sib);
+            }
+        }
+        for (XqProductRespVO.Variant v : stubs) {
+            XqGigaProductRow sib = byKey.get(v.getSku());
+            if (sib == null) {
+                sib = byKey.get(v.getItemCode());
+            }
+            if (sib == null) {
+                continue;
+            }
+            v.setId(sib.getId());
+            v.setSku(sib.getSku());
+            v.setItemCode(StrUtil.blankToDefault(sib.getItemCode(), sib.getSku()));
+            v.setImageUrl(sib.getImageUrl());
+            v.setQtyAvailable(sib.getQtyAvailable());
+            v.setPrice(sib.getPrice());
+            v.setDiscountedPrice(sib.getDiscountedPrice());
+            v.setMainColor(StrUtil.blankToDefault(sib.getMainColor(), v.getMainColor()));
+            v.setName(XqGigaAssociateSupport.variantLabel(
+                    sib.getSku(), sib.getMainColor(), sib.getAssociateProductInfoJson()));
+        }
+        vo.setVariants(stubs);
     }
 
     private List<String> parseImageUrls(String json) {
