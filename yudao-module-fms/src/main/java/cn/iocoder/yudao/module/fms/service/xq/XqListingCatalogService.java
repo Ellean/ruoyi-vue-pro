@@ -9,6 +9,9 @@ import cn.iocoder.yudao.framework.common.util.object.BeanUtils;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCategoryFieldConfigRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCategoryFieldConfigSaveReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCategoryFieldTemplateRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqFieldPoolRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqShopFieldConfigRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqShopFieldConfigSaveReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleSaveReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqImageGenRuleRespVO;
@@ -21,6 +24,10 @@ import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqCopyGenRuleDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqImageGenRuleDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingCategoryFieldConfigDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingCategoryFieldTemplateDO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingFieldCommonDO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingFieldPoolDO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingFieldSpecialDO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingShopFieldConfigDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingCategoryDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingPlatformDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqPlatformDO;
@@ -29,6 +36,10 @@ import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqCopyGenRuleMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqImageGenRuleMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingCategoryFieldConfigMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingCategoryFieldTemplateMapper;
+import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingFieldCommonMapper;
+import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingFieldPoolMapper;
+import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingFieldSpecialMapper;
+import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingShopFieldConfigMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingCategoryMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingPlatformMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqPlatformMapper;
@@ -70,6 +81,14 @@ public class XqListingCatalogService {
     private XqListingCategoryFieldTemplateMapper categoryFieldTemplateMapper;
     @Resource
     private XqListingCategoryFieldConfigMapper categoryFieldConfigMapper;
+    @Resource
+    private XqListingShopFieldConfigMapper shopFieldConfigMapper;
+    @Resource
+    private XqListingFieldPoolMapper listingFieldPoolMapper;
+    @Resource
+    private XqListingFieldCommonMapper listingFieldCommonMapper;
+    @Resource
+    private XqListingFieldSpecialMapper listingFieldSpecialMapper;
     @Resource
     private XqCopyGenRuleMapper copyGenRuleMapper;
     @Resource
@@ -518,6 +537,468 @@ public class XqListingCatalogService {
         categoryFieldConfigMapper.updateById(update);
     }
 
+    public XqFieldPoolRespVO getFieldPool(String platformId, String shopId, String country) {
+        XqFieldPoolRespVO out = new XqFieldPoolRespVO();
+        out.setPlatformId(StrUtil.blankToDefault(platformId, ""));
+        Set<String> templatePlatformIds = resolveTemplatePlatformIds(platformId);
+        Map<String, XqCategoryFieldTemplateRespVO.Field> byCode = new java.util.LinkedHashMap<>();
+        Set<String> categoryIds = new HashSet<>();
+        String loadedFrom = "";
+        if (!templatePlatformIds.isEmpty()) {
+            List<XqListingFieldPoolDO> poolRows =
+                    onXqDs(() -> listingFieldPoolMapper.selectByPlatformIds(templatePlatformIds));
+            for (XqListingFieldPoolDO row : poolRows) {
+                putPoolField(byCode, toFieldFromPool(row));
+            }
+            if (!byCode.isEmpty()) {
+                loadedFrom = "pool";
+            }
+        }
+        if (byCode.isEmpty() && !templatePlatformIds.isEmpty()) {
+            List<XqListingFieldCommonDO> commons =
+                    onXqDs(() -> listingFieldCommonMapper.selectByPlatformIds(templatePlatformIds));
+            for (XqListingFieldCommonDO row : commons) {
+                putPoolField(byCode, toFieldFromSplit(
+                        row.getFieldCode(), row.getLabel(), row.getFieldType(),
+                        row.getRequired(), row.getRequirementLevel(),
+                        row.getValuesListCode(), row.getFieldJson(), "common"));
+            }
+            List<XqListingFieldSpecialDO> specials =
+                    onXqDs(() -> listingFieldSpecialMapper.selectByPlatformIds(templatePlatformIds));
+            for (XqListingFieldSpecialDO row : specials) {
+                putPoolField(byCode, toFieldFromSplit(
+                        row.getFieldCode(), row.getLabel(), row.getFieldType(),
+                        row.getRequired(), row.getRequirementLevel(),
+                        row.getValuesListCode(), row.getFieldJson(), "special"));
+            }
+            if (!byCode.isEmpty()) {
+                loadedFrom = "split";
+            }
+        }
+        List<XqListingCategoryFieldTemplateDO> templates = List.of();
+        if (byCode.isEmpty() && !templatePlatformIds.isEmpty()) {
+            templates = onXqDs(() -> categoryFieldTemplateMapper.selectByPlatformIds(templatePlatformIds));
+        }
+        for (XqListingCategoryFieldTemplateDO row : templates) {
+            if (row == null || StrUtil.isBlank(row.getTemplateJson())) {
+                continue;
+            }
+            categoryIds.add(StrUtil.blankToDefault(row.getCategoryId(), ""));
+            XqCategoryFieldTemplateRespVO parsed = toCategoryFieldTemplateVo(row, "");
+            row.setTemplateJson(null);
+            for (XqCategoryFieldTemplateRespVO.Field field : parsed.getFields()) {
+                if (field == null || StrUtil.isBlank(field.getCode())) {
+                    continue;
+                }
+                XqCategoryFieldTemplateRespVO.Field exist = byCode.get(field.getCode());
+                if (exist == null) {
+                    field.setSourceCount(1);
+                    byCode.put(field.getCode(), field);
+                    continue;
+                }
+                exist.setSourceCount((exist.getSourceCount() == null ? 1 : exist.getSourceCount()) + 1);
+                if (Boolean.TRUE.equals(field.getRequired()) && !Boolean.TRUE.equals(exist.getRequired())) {
+                    exist.setRequired(true);
+                    exist.setGroupLabel("必填");
+                    exist.setRequirementLevel(field.getRequirementLevel());
+                }
+            }
+        }
+        List<XqCategoryFieldTemplateRespVO.Field> fields;
+        if (byCode.isEmpty()) {
+            if (isAmazonLike(platformId)) {
+                fields = amazonDefaultFields();
+                out.setSourceHint("amazon-default");
+            } else {
+                fields = new ArrayList<>();
+                out.setSourceHint("catalog-empty");
+            }
+            out.setCategoryCount(0);
+        } else {
+            fields = new ArrayList<>(byCode.values());
+            out.setSourceHint(StrUtil.blankToDefault(loadedFrom, "catalog"));
+            out.setCategoryCount(categoryIds.size());
+        }
+        int required = 0;
+        for (XqCategoryFieldTemplateRespVO.Field field : fields) {
+            if (Boolean.TRUE.equals(field.getRequired())) {
+                required++;
+            }
+        }
+        out.setRequiredCount(required);
+        out.setTotal(fields.size());
+        XqShopFieldConfigRespVO cfg = getShopFieldConfig(platformId, shopId, country);
+        Map<String, XqShopFieldConfigRespVO.Item> overlay = new HashMap<>();
+        if (cfg.getFields() != null) {
+            for (XqShopFieldConfigRespVO.Item item : cfg.getFields()) {
+                overlay.put(item.getCode(), item);
+            }
+        }
+        boolean anySavedZone = overlay.values().stream().anyMatch(i -> StrUtil.isNotBlank(i.getZone()));
+        for (XqCategoryFieldTemplateRespVO.Field field : fields) {
+            XqShopFieldConfigRespVO.Item item = overlay.get(field.getCode());
+            if (item != null) {
+                field.setDefaultValue(item.getDefaultValue());
+                field.setValueSource(item.getValueSource());
+                field.setZone(normalizeFieldZone(item.getZone()));
+                if (item.getRequired() != null) {
+                    field.setRequired(item.getRequired());
+                    field.setGroupLabel(Boolean.TRUE.equals(item.getRequired()) ? "必填" : "选填");
+                    field.setRequirementLevel(
+                            Boolean.TRUE.equals(item.getRequired()) ? "REQUIRED" : "OPTIONAL");
+                }
+            }
+            if (StrUtil.isBlank(field.getZone()) && !anySavedZone) {
+                field.setZone(guessFieldZone(field));
+            }
+        }
+        out.setFields(fields);
+        out.setPartitions(ensureSystemPartitions(cfg.getPartitions()));
+        return out;
+    }
+
+    private Set<String> resolveTemplatePlatformIds(String platformId) {
+        Set<String> ids = new java.util.LinkedHashSet<>();
+        String source = storeScopeService.resolveSourcePlatformId(platformId);
+        if (StrUtil.isNotBlank(source)) {
+            ids.add(source);
+        }
+        Long xqId = XqStoreScopeService.parseLong(platformId);
+        XqPlatformDO biz = xqId == null ? null : xqPlatformMapper.selectById(xqId);
+        if (biz != null) {
+            if (StrUtil.isNotBlank(biz.getSourcePlatformId())) {
+                ids.add(biz.getSourcePlatformId());
+            }
+            String code = StrUtil.blankToDefault(biz.getCode(), "").trim();
+            if (StrUtil.isNotBlank(code)) {
+                XqListingPlatformDO listing =
+                        onXqDs(() -> platformMapper.selectByCode(code));
+                if (listing != null && StrUtil.isNotBlank(listing.getId())) {
+                    ids.add(listing.getId());
+                }
+            }
+        }
+        return ids;
+    }
+
+    private static void putPoolField(
+            Map<String, XqCategoryFieldTemplateRespVO.Field> byCode,
+            XqCategoryFieldTemplateRespVO.Field field) {
+        if (field == null || StrUtil.isBlank(field.getCode())) {
+            return;
+        }
+        XqCategoryFieldTemplateRespVO.Field exist = byCode.get(field.getCode());
+        if (exist == null) {
+            if (field.getSourceCount() == null) {
+                field.setSourceCount(1);
+            }
+            byCode.put(field.getCode(), field);
+            return;
+        }
+        int add = field.getSourceCount() == null ? 1 : field.getSourceCount();
+        exist.setSourceCount((exist.getSourceCount() == null ? 1 : exist.getSourceCount()) + add);
+        if (Boolean.TRUE.equals(field.getRequired()) && !Boolean.TRUE.equals(exist.getRequired())) {
+            exist.setRequired(true);
+            exist.setGroupLabel("必填");
+            exist.setRequirementLevel(field.getRequirementLevel());
+        }
+    }
+
+    private static XqCategoryFieldTemplateRespVO.Field toFieldFromPool(XqListingFieldPoolDO row) {
+        return toFieldFromSplit(
+                row.getFieldCode(), row.getLabel(), row.getFieldType(),
+                row.getRequired(), row.getRequirementLevel(),
+                row.getValuesListCode(), row.getFieldJson(), row.getSource());
+    }
+
+    private static XqCategoryFieldTemplateRespVO.Field toFieldFromSplit(
+            String code, String label, String type, Boolean required, String requirementLevel,
+            String valuesList, String fieldJson, String source) {
+        XqCategoryFieldTemplateRespVO.Field f = new XqCategoryFieldTemplateRespVO.Field();
+        JSONObject json = null;
+        if (StrUtil.isNotBlank(fieldJson)) {
+            try {
+                json = JSONUtil.parseObj(fieldJson);
+            } catch (Exception ignored) {
+                json = null;
+            }
+        }
+        f.setCode(StrUtil.blankToDefault(code, json == null ? "" : json.getStr("code")));
+        f.setLabel(StrUtil.blankToDefault(label, json == null ? f.getCode() : json.getStr("label", f.getCode())));
+        f.setType(StrUtil.blankToDefault(type, json == null ? "" : json.getStr("type")));
+        boolean req = Boolean.TRUE.equals(required)
+                || (json != null && Boolean.TRUE.equals(json.getBool("required")));
+        String level = StrUtil.blankToDefault(requirementLevel,
+                json == null ? "" : json.getStr("requirementLevel"));
+        f.setRequired(req);
+        f.setRequirementLevel(level);
+        f.setGroupLabel(req ? "必填" : ("RECOMMENDED".equalsIgnoreCase(level) ? "推荐" : "选填"));
+        f.setValuesList(StrUtil.blankToDefault(valuesList,
+                json == null ? "" : json.getStr("valuesList")));
+        f.setSource(StrUtil.blankToDefault(source, json == null ? "" : json.getStr("source")));
+        int sourceCount = 1;
+        if (json != null && json.getJSONArray("categoryIds") != null) {
+            sourceCount = Math.max(1, json.getJSONArray("categoryIds").size());
+        }
+        f.setSourceCount(sourceCount);
+        return f;
+    }
+
+    private boolean isAmazonLike(String platformId) {
+        Long xqId = XqStoreScopeService.parseLong(platformId);
+        XqPlatformDO biz = xqId == null ? null : xqPlatformMapper.selectById(xqId);
+        String code = biz == null ? "" : StrUtil.blankToDefault(biz.getCode(), "");
+        String name = biz == null ? "" : StrUtil.blankToDefault(biz.getName(), "");
+        return "amz".equalsIgnoreCase(code)
+                || "amazon".equalsIgnoreCase(code)
+                || name.toLowerCase().contains("amz")
+                || name.toLowerCase().contains("amazon");
+    }
+
+    private static List<XqCategoryFieldTemplateRespVO.Field> amazonDefaultFields() {
+        List<XqCategoryFieldTemplateRespVO.Field> list = new ArrayList<>();
+        addPoolField(list, "item_name", "标题", "STRING", true);
+        addPoolField(list, "brand", "品牌", "STRING", true);
+        addPoolField(list, "product_type", "产品类型", "STRING", true);
+        addPoolField(list, "product_description", "商品描述", "LONG_TEXT", true);
+        addPoolField(list, "bullet_point", "卖点", "STRING", true);
+        addPoolField(list, "generic_keyword", "搜索关键词", "STRING", false);
+        addPoolField(list, "manufacturer", "制造商", "STRING", false);
+        addPoolField(list, "model_number", "型号", "STRING", false);
+        addPoolField(list, "part_number", "零件号", "STRING", false);
+        addPoolField(list, "external_product_id", "UPC/EAN", "STRING", true);
+        addPoolField(list, "standard_price", "售价", "DECIMAL", true);
+        addPoolField(list, "list_price", "划线价", "DECIMAL", false);
+        addPoolField(list, "quantity", "库存", "INTEGER", true);
+        addPoolField(list, "condition_type", "成色", "STRING", true);
+        addPoolField(list, "merchant_suggested_asin", "建议 ASIN", "STRING", false);
+        addPoolField(list, "parentage_level", "父子关系", "STRING", false);
+        addPoolField(list, "parent_sku", "父 SKU", "STRING", false);
+        addPoolField(list, "variation_theme", "变体主题", "STRING", false);
+        addPoolField(list, "color", "颜色", "STRING", false);
+        addPoolField(list, "size", "尺寸", "STRING", false);
+        addPoolField(list, "style", "款式", "STRING", false);
+        addPoolField(list, "material", "材质", "STRING", false);
+        addPoolField(list, "country_of_origin", "原产国", "STRING", false);
+        addPoolField(list, "item_length", "物品长", "DECIMAL", false);
+        addPoolField(list, "item_width", "物品宽", "DECIMAL", false);
+        addPoolField(list, "item_height", "物品高", "DECIMAL", false);
+        addPoolField(list, "item_weight", "物品重量", "DECIMAL", false);
+        addPoolField(list, "package_length", "包装长", "DECIMAL", false);
+        addPoolField(list, "package_width", "包装宽", "DECIMAL", false);
+        addPoolField(list, "package_height", "包装高", "DECIMAL", false);
+        addPoolField(list, "package_weight", "包装重量", "DECIMAL", false);
+        addPoolField(list, "main_image_url", "主图", "MEDIA", true);
+        addPoolField(list, "other_image_url", "附图", "MEDIA", false);
+        addPoolField(list, "swatch_image_url", "色卡图", "MEDIA", false);
+        return list;
+    }
+
+    private static void addPoolField(
+            List<XqCategoryFieldTemplateRespVO.Field> list,
+            String code, String label, String type, boolean required) {
+        XqCategoryFieldTemplateRespVO.Field f = new XqCategoryFieldTemplateRespVO.Field();
+        f.setCode(code);
+        f.setLabel(label);
+        f.setType(type);
+        f.setRequired(required);
+        f.setRequirementLevel(required ? "REQUIRED" : "OPTIONAL");
+        f.setGroupLabel(required ? "必填" : "选填");
+        f.setSourceCount(1);
+        list.add(f);
+    }
+
+    public XqShopFieldConfigRespVO getShopFieldConfig(String platformId, String shopId, String country) {
+        String sourcePlatformId = storeScopeService.resolveSourcePlatformId(platformId);
+        String sid = StrUtil.blankToDefault(shopId, "");
+        String cc = StrUtil.blankToDefault(country, "").toUpperCase();
+        XqShopFieldConfigRespVO vo = new XqShopFieldConfigRespVO();
+        vo.setPlatformId(StrUtil.blankToDefault(platformId, ""));
+        vo.setShopId(sid);
+        vo.setCountry(cc);
+        vo.setPartitions(ensureSystemPartitions(null));
+        if (StrUtil.isBlank(sourcePlatformId) || StrUtil.isBlank(sid) || StrUtil.isBlank(cc)) {
+            return vo;
+        }
+        XqListingShopFieldConfigDO row =
+                onXqDs(() -> shopFieldConfigMapper.selectByScope(sourcePlatformId, sid, cc));
+        if (row == null) {
+            return vo;
+        }
+        vo.setId(row.getId());
+        vo.setFields(new ArrayList<>(parseShopFieldItems(row.getFieldsJson()).values()));
+        vo.setPartitions(ensureSystemPartitions(parsePartitions(row.getPartitionsJson())));
+        return vo;
+    }
+
+    public void saveShopFieldConfig(XqShopFieldConfigSaveReqVO reqVO) {
+        String sourcePlatformId = storeScopeService.resolveSourcePlatformId(reqVO.getPlatformId());
+        if (StrUtil.isBlank(sourcePlatformId)) {
+            sourcePlatformId = StrUtil.blankToDefault(reqVO.getPlatformId(), "");
+        }
+        String shopId = StrUtil.blankToDefault(reqVO.getShopId(), "");
+        String country = StrUtil.blankToDefault(reqVO.getCountry(), "").toUpperCase();
+        JSONArray fieldArr = new JSONArray();
+        List<XqShopFieldConfigSaveReqVO.Item> items =
+                reqVO.getFields() == null ? List.of() : reqVO.getFields();
+        for (XqShopFieldConfigSaveReqVO.Item item : items) {
+            if (item == null || StrUtil.isBlank(item.getCode())) {
+                continue;
+            }
+            String def = StrUtil.blankToDefault(item.getDefaultValue(), "");
+            String src = StrUtil.blankToDefault(item.getValueSource(), "");
+            String zone = normalizeFieldZone(item.getZone());
+            Boolean required = item.getRequired();
+            if (StrUtil.isBlank(def) && StrUtil.isBlank(src) && StrUtil.isBlank(zone) && required == null) {
+                continue;
+            }
+            JSONObject obj = new JSONObject();
+            obj.set("code", item.getCode().trim());
+            obj.set("defaultValue", def);
+            obj.set("valueSource", src);
+            obj.set("zone", zone);
+            if (required != null) {
+                obj.set("required", required);
+            }
+            fieldArr.add(obj);
+        }
+        JSONArray partArr = new JSONArray();
+        for (XqShopFieldConfigRespVO.Partition p : ensureSystemPartitions(reqVO.getPartitions())) {
+            JSONObject obj = new JSONObject();
+            obj.set("id", p.getId());
+            obj.set("name", p.getName());
+            obj.set("keywords", StrUtil.blankToDefault(p.getKeywords(), ""));
+            obj.set("system", Boolean.TRUE.equals(p.getSystem()));
+            obj.set("color", StrUtil.blankToDefault(p.getColor(), ""));
+            partArr.add(obj);
+        }
+        LocalDateTime now = LocalDateTime.now();
+        String srcPid = sourcePlatformId;
+        XqListingShopFieldConfigDO exists =
+                onXqDs(() -> shopFieldConfigMapper.selectByScope(srcPid, shopId, country));
+        if (exists == null) {
+            XqListingShopFieldConfigDO insert = new XqListingShopFieldConfigDO();
+            insert.setId(IdUtil.fastUUID());
+            insert.setPlatformId(srcPid);
+            insert.setShopId(shopId);
+            insert.setCountry(country);
+            insert.setFieldsJson(fieldArr.toString());
+            insert.setPartitionsJson(partArr.toString());
+            insert.setCreateDate(now);
+            insert.setUpdateDate(now);
+            onXqDs(() -> {
+                shopFieldConfigMapper.insert(insert);
+                return true;
+            });
+            return;
+        }
+        XqListingShopFieldConfigDO update = new XqListingShopFieldConfigDO();
+        update.setId(exists.getId());
+        update.setFieldsJson(fieldArr.toString());
+        update.setPartitionsJson(partArr.toString());
+        update.setUpdateDate(now);
+        onXqDs(() -> {
+            shopFieldConfigMapper.updateById(update);
+            return true;
+        });
+    }
+
+    private static List<XqShopFieldConfigRespVO.Partition> ensureSystemPartitions(
+            List<XqShopFieldConfigRespVO.Partition> raw) {
+        Map<String, XqShopFieldConfigRespVO.Partition> map = new java.util.LinkedHashMap<>();
+        map.put("copy", systemPartition("copy", "描述", "title,description,bullet,卖点,长描述", "#2563eb"));
+        map.put("product", systemPartition("product", "产品", "sku,upc,gtin,inventory,库存,color", "#059669"));
+        map.put("attr", systemPartition("attr", "属性", "length,width,height,weight,brand,material,尺寸", "#d97706"));
+        if (raw != null) {
+            for (XqShopFieldConfigRespVO.Partition p : raw) {
+                if (p == null || StrUtil.isBlank(p.getId())) {
+                    continue;
+                }
+                String id = normalizeFieldZone(p.getId());
+                if (StrUtil.isBlank(id)) {
+                    continue;
+                }
+                if (map.containsKey(id) && Boolean.TRUE.equals(map.get(id).getSystem())) {
+                    XqShopFieldConfigRespVO.Partition sys = map.get(id);
+                    if (StrUtil.isNotBlank(p.getKeywords())) {
+                        sys.setKeywords(p.getKeywords());
+                    }
+                    continue;
+                }
+                if (Boolean.TRUE.equals(p.getSystem())) {
+                    continue;
+                }
+                p.setId(id);
+                p.setSystem(false);
+                map.put(id, p);
+            }
+        }
+        return new ArrayList<>(map.values());
+    }
+
+    private static XqShopFieldConfigRespVO.Partition systemPartition(
+            String id, String name, String keywords, String color) {
+        XqShopFieldConfigRespVO.Partition p = new XqShopFieldConfigRespVO.Partition();
+        p.setId(id);
+        p.setName(name);
+        p.setKeywords(keywords);
+        p.setSystem(true);
+        p.setColor(color);
+        return p;
+    }
+
+    private static Map<String, XqShopFieldConfigRespVO.Item> parseShopFieldItems(String json) {
+        Map<String, XqShopFieldConfigRespVO.Item> map = new HashMap<>();
+        if (StrUtil.isBlank(json)) {
+            return map;
+        }
+        try {
+            JSONArray arr = JSONUtil.parseArray(json);
+            for (Object raw : arr) {
+                JSONObject obj = JSONUtil.parseObj(raw);
+                String code = StrUtil.blankToDefault(obj.getStr("code"), "").trim();
+                if (StrUtil.isBlank(code)) {
+                    continue;
+                }
+                XqShopFieldConfigRespVO.Item item = new XqShopFieldConfigRespVO.Item();
+                item.setCode(code);
+                item.setDefaultValue(obj.getStr("defaultValue"));
+                item.setValueSource(obj.getStr("valueSource"));
+                item.setZone(normalizeFieldZone(obj.getStr("zone")));
+                if (obj.containsKey("required")) {
+                    item.setRequired(obj.getBool("required"));
+                }
+                map.put(code, item);
+            }
+        } catch (Exception ignored) {
+            // ignore
+        }
+        return map;
+    }
+
+    private static List<XqShopFieldConfigRespVO.Partition> parsePartitions(String json) {
+        List<XqShopFieldConfigRespVO.Partition> out = new ArrayList<>();
+        if (StrUtil.isBlank(json)) {
+            return out;
+        }
+        try {
+            JSONArray arr = JSONUtil.parseArray(json);
+            for (Object raw : arr) {
+                JSONObject obj = JSONUtil.parseObj(raw);
+                XqShopFieldConfigRespVO.Partition p = new XqShopFieldConfigRespVO.Partition();
+                p.setId(obj.getStr("id"));
+                p.setName(obj.getStr("name"));
+                p.setKeywords(obj.getStr("keywords"));
+                p.setSystem(obj.getBool("system"));
+                p.setColor(obj.getStr("color"));
+                out.add(p);
+            }
+        } catch (Exception ignored) {
+            // ignore
+        }
+        return out;
+    }
+
     private void applyFieldConfig(XqCategoryFieldTemplateRespVO vo, String categoryId) {
         if (vo == null || vo.getFields() == null || vo.getFields().isEmpty()
                 || StrUtil.isBlank(categoryId)) {
@@ -542,9 +1023,16 @@ public class XqListingCatalogService {
     }
 
     private static String normalizeFieldZone(String raw) {
-        String zone = StrUtil.blankToDefault(raw, "").trim().toLowerCase();
-        if ("copy".equals(zone) || "product".equals(zone) || "attr".equals(zone)) {
-            return zone;
+        String zone = StrUtil.blankToDefault(raw, "").trim();
+        if (StrUtil.isBlank(zone)) {
+            return "";
+        }
+        String lower = zone.toLowerCase();
+        if ("copy".equals(lower) || "product".equals(lower) || "attr".equals(lower)) {
+            return lower;
+        }
+        if (lower.startsWith("u_") && lower.matches("u_[a-z0-9_]{1,40}")) {
+            return lower;
         }
         return "";
     }

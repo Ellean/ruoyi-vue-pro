@@ -38,6 +38,7 @@ import java.util.Objects;
 import java.util.Set;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
+import static cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUtils.getLoginUserId;
 import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.*;
 import static cn.iocoder.yudao.module.fms.service.xq.XqSourceItemServiceImpl.WORK_STATUS_DOING;
 
@@ -72,7 +73,12 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
     @Override
     public XqWorkOrderDO getWorkOrder(Long id) {
-        return workOrderMapper.selectById(id);
+        XqWorkOrderDO order = workOrderMapper.selectById(id);
+        if (order == null) {
+            return null;
+        }
+        assertOwner(order);
+        return order;
     }
 
     @Override
@@ -231,6 +237,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (order == null) {
             throw exception(XQ_WORK_ORDER_NOT_EXISTS);
         }
+        assertOwner(order);
         if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
             throw exception(XQ_WORK_ORDER_CLOSE_INVALID);
         }
@@ -257,6 +264,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             if (order == null) {
                 continue;
             }
+            assertOwner(order);
             if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
                 continue;
             }
@@ -736,10 +744,36 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (order == null) {
             throw exception(XQ_WORK_ORDER_NOT_EXISTS);
         }
+        assertOwner(order);
         if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
             throw exception(XQ_WORK_ORDER_STATUS_INVALID);
         }
         return order;
+    }
+
+    /** 下发人 / 文案领取人 / 美工 / 创建人 才可看自己的任务 */
+    private void assertOwner(XqWorkOrderDO order) {
+        Long uid = getLoginUserId();
+        if (isBoundUser(order, uid)) {
+            return;
+        }
+        if (order.getParentWorkOrderId() != null) {
+            XqWorkOrderDO parent = workOrderMapper.selectById(order.getParentWorkOrderId());
+            if (parent != null && isBoundUser(parent, uid)) {
+                return;
+            }
+        }
+        throw exception(XQ_WORK_ORDER_ACCESS_DENIED);
+    }
+
+    private static boolean isBoundUser(XqWorkOrderDO order, Long uid) {
+        if (order == null || uid == null) {
+            return false;
+        }
+        return uid.equals(order.getAssigneeUserId())
+                || uid.equals(order.getCopyUserId())
+                || uid.equals(order.getImageUserId())
+                || String.valueOf(uid).equals(StrUtil.blankToDefault(order.getCreator(), ""));
     }
 
     private static boolean isCopyReady(XqWorkOrderDO order) {

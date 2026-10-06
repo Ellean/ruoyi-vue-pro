@@ -4,6 +4,9 @@ import cn.iocoder.yudao.framework.common.pojo.CommonResult;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCategoryFieldConfigRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCategoryFieldConfigSaveReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCategoryFieldTemplateRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqFieldPoolRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqShopFieldConfigRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqShopFieldConfigSaveReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleSaveReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqImageGenRuleRespVO;
@@ -148,6 +151,35 @@ public class XqListingCatalogController {
     public CommonResult<Boolean> saveCategoryFieldConfig(
             @Valid @RequestBody XqCategoryFieldConfigSaveReqVO reqVO) {
         listingCatalogService.saveCategoryFieldConfig(reqVO);
+        return success(true);
+    }
+
+    @GetMapping("/field-pool")
+    @Operation(summary = "平台字段池（杂糅全部原分类模板字段），可叠加店铺+国家分区")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:template-config:query', 'xq:work-order:query', 'xq:work-order:update')")
+    public CommonResult<XqFieldPoolRespVO> getFieldPool(
+            @RequestParam("platformId") String platformId,
+            @RequestParam(value = "shopId", required = false) String shopId,
+            @RequestParam(value = "country", required = false) String country) {
+        return success(listingCatalogService.getFieldPool(platformId, shopId, country));
+    }
+
+    @GetMapping("/shop-field-config")
+    @Operation(summary = "获得店铺+国家字段池配置")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:template-config:query', 'xq:work-order:query', 'xq:work-order:update')")
+    public CommonResult<XqShopFieldConfigRespVO> getShopFieldConfig(
+            @RequestParam("platformId") String platformId,
+            @RequestParam("shopId") String shopId,
+            @RequestParam("country") String country) {
+        return success(listingCatalogService.getShopFieldConfig(platformId, shopId, country));
+    }
+
+    @PostMapping("/shop-field-config")
+    @Operation(summary = "保存店铺+国家字段池与分区")
+    @PreAuthorize("@ss.hasPermission('xq:template-config:update')")
+    public CommonResult<Boolean> saveShopFieldConfig(
+            @Valid @RequestBody XqShopFieldConfigSaveReqVO reqVO) {
+        listingCatalogService.saveShopFieldConfig(reqVO);
         return success(true);
     }
 

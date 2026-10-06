@@ -38,6 +38,29 @@ public class XqProductRespVO {
     private String remark;
     private LocalDateTime createTime;
     private String mainColor;
+    private String familySku;
+    private String upc;
+    private java.math.BigDecimal lengthCm;
+    private java.math.BigDecimal widthCm;
+    private java.math.BigDecimal heightCm;
+    private java.math.BigDecimal lengthIn;
+    private java.math.BigDecimal widthIn;
+    private java.math.BigDecimal heightIn;
+    private String lengthUnit;
+    private java.math.BigDecimal weight;
+    private java.math.BigDecimal weightKg;
+    private String weightUnit;
+    private java.math.BigDecimal assembledLength;
+    private java.math.BigDecimal assembledWidth;
+    private java.math.BigDecimal assembledHeight;
+    private java.math.BigDecimal assembledWeight;
+    private String assembledLengthUnit;
+    private String assembledWeightUnit;
+    private String mainMaterial;
+    private String placeOfOrigin;
+    private String brandName;
+    private String characteristics;
+    private String attributesJson;
     private List<Variant> variants = new ArrayList<>();
 
     @Data

@@ -49,6 +49,15 @@ public class XqWorkOrderController {
     @Operation(summary = "工作台任务分页")
     @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:query', 'xq:work-order:my-copy', 'xq:work-order:my-image', 'xq:work-order:list')")
     public CommonResult<PageResult<XqWorkOrderRespVO>> getWorkOrderPage(@Valid XqWorkOrderPageReqVO pageReqVO) {
+        Long uid = getLoginUserId();
+        pageReqVO.setBoundUserId(uid);
+        if (pageReqVO.getMineUserId() != null) {
+            pageReqVO.setMineUserId(uid);
+        }
+        if (pageReqVO.getMineImageUserId() != null) {
+            pageReqVO.setMineImageUserId(uid);
+        }
+        pageReqVO.setAssigneeUserId(null);
         PageResult<XqWorkOrderDO> page = workOrderService.getWorkOrderPage(pageReqVO);
         PageResult<XqWorkOrderRespVO> vo = BeanUtils.toBean(page, XqWorkOrderRespVO.class);
         workOrderService.attachVariants(vo.getList());

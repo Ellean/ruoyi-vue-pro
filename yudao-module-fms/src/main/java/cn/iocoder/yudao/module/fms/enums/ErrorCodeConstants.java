@@ -221,5 +221,14 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_WAREHOUSE_NOT_EXISTS = new ErrorCode(1_052_200_057, "发货仓库不存在");
     ErrorCode XQ_WAREHOUSE_CODE_DUPLICATE = new ErrorCode(1_052_200_058, "发货仓库编码已存在");
     ErrorCode XQ_STORE_WAREHOUSE_NOT_EXISTS = new ErrorCode(1_052_200_059, "店铺发货仓绑定不存在");
+    ErrorCode XQ_SPECIAL_CONFIG_INVALID = new ErrorCode(1_052_200_070, "{}");
+    ErrorCode XQ_SKU_RULE_NOT_EXISTS = new ErrorCode(1_052_200_071, "SKU 规则不存在");
+    ErrorCode XQ_MARKUP_RULE_NOT_EXISTS = new ErrorCode(1_052_200_072, "价格增幅规则不存在");
+    ErrorCode XQ_UPC_RULE_NOT_EXISTS = new ErrorCode(1_052_200_073, "UPC 规则不存在");
+    ErrorCode XQ_UPC_POOL_NOT_EXISTS = new ErrorCode(1_052_200_074, "UPC 库存码不存在");
+    ErrorCode XQ_SKU_RULE_DUPLICATE = new ErrorCode(1_052_200_075, "该店铺下已有对应运营的 SKU 规则，请直接编辑");
+    ErrorCode XQ_MARKUP_RULE_DUPLICATE = new ErrorCode(1_052_200_076, "该店铺下已有对应运营的价格增幅规则，请直接编辑");
+    ErrorCode XQ_UPC_RULE_DUPLICATE = new ErrorCode(1_052_200_077, "该平台已有通用 UPC 规则，请直接编辑");
+    ErrorCode XQ_WORK_ORDER_ACCESS_DENIED = new ErrorCode(1_052_200_078, "无权查看或操作该任务，产品已绑定其他账号");
 
 }

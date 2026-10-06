@@ -185,57 +185,89 @@
         CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.lengthCm')) AS DECIMAL(14,2)) AS lengthCm,
         CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.widthCm')) AS DECIMAL(14,2)) AS widthCm,
         CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.heightCm')) AS DECIMAL(14,2)) AS heightCm,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.length')) AS DECIMAL(14,2)) AS lengthIn,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.width')) AS DECIMAL(14,2)) AS widthIn,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.height')) AS DECIMAL(14,2)) AS heightIn,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.lengthUnit')) AS lengthUnit,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.weight')) AS DECIMAL(14,2)) AS weight,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.weightKg')) AS DECIMAL(14,2)) AS weightKg,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.weightUnit')) AS weightUnit,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.assembledLength')) AS DECIMAL(14,2)) AS assembledLength,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.assembledWidth')) AS DECIMAL(14,2)) AS assembledWidth,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.assembledHeight')) AS DECIMAL(14,2)) AS assembledHeight,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.assembledWeight')) AS DECIMAL(14,2)) AS assembledWeight,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.assembledLengthUnit')) AS assembledLengthUnit,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.assembledWeightUnit')) AS assembledWeightUnit,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mainMaterial')) AS mainMaterial,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.placeOfOrigin')) AS placeOfOrigin,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.brandInfo.brandName')) AS brandName,
+        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.characteristics')) AS characteristics,
+        JSON_EXTRACT(s.detail_json, '$.attributes') AS attributesJson,
         JSON_EXTRACT(s.detail_json, '$.associateProductList') AS associateProductListJson,
         JSON_EXTRACT(s.detail_json, '$.associateProductInfo') AS associateProductInfoJson
     </sql>
-
-    <!-- 无筛选 COUNT：DISTINCT sku + EXISTS，避免 JOIN 放大与 LOB 扫描 -->
     <select id="selectPageCount" resultType="long">
-        <choose>
-            <when test="(name == null or name == '') and (categoryIds == null or categoryIds.size() == 0)">
-                SELECT COUNT(DISTINCT s.sku)
-                FROM t_gigab2b_product_snapshot s
-                WHERE EXISTS (
-                  SELECT 1 FROM t_gigab2b_product_list l WHERE l.sku = s.sku
+        SELECT COUNT(1)
+        FROM t_gigab2b_product_family_index p
+        WHERE p.is_primary = 1
+          AND p.collected = 1
+        <if test="name != null and name != ''">
+            AND EXISTS (
+              SELECT 1 FROM t_gigab2b_product_family_index m
+              WHERE m.family_sku = p.family_sku
+                AND m.collected = 1
+                AND (
+                  m.sku LIKE CONCAT('%', #{name}, '%')
+                  OR m.product_name LIKE CONCAT('%', #{name}, '%')
+                  OR m.variant_label LIKE CONCAT('%', #{name}, '%')
+                  OR m.item_code LIKE CONCAT('%', #{name}, '%')
                 )
-            </when>
-            <otherwise>
-                SELECT COUNT(1)
-                FROM <include refid="BestListOnSnapshotSkus"/> l
-                WHERE 1 = 1
-                <if test="categoryIds != null and categoryIds.size() &gt; 0">
-                    AND EXISTS (
-                      SELECT 1
-                      FROM t_gigab2b_product_snapshot s2
-                      WHERE s2.sku = l.sku
-                        AND CAST(JSON_UNQUOTE(JSON_EXTRACT(s2.detail_json, '$.categoryCode')) AS UNSIGNED) IN
-                        <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">
-                            #{cid}
-                        </foreach>
-                      LIMIT 1
-                    )
-                </if>
-            </otherwise>
-        </choose>
-    </select>
-
-    <select id="selectPageIds" resultType="string">
-        SELECT l.id
-        FROM <include refid="BestListOnSnapshotSkus"/> l
-        WHERE 1 = 1
+            )
+        </if>
         <if test="categoryIds != null and categoryIds.size() &gt; 0">
             AND EXISTS (
-              SELECT 1
-              FROM t_gigab2b_product_snapshot s2
-              WHERE s2.sku = l.sku
-                AND CAST(JSON_UNQUOTE(JSON_EXTRACT(s2.detail_json, '$.categoryCode')) AS UNSIGNED) IN
+              SELECT 1 FROM t_gigab2b_product_family_index m
+              WHERE m.family_sku = p.family_sku
+                AND m.collected = 1
+                AND m.giga_category_id IN
                 <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">
                     #{cid}
                 </foreach>
-              LIMIT 1
             )
         </if>
-        ORDER BY COALESCE(l.sync_time, l.create_date) DESC, l.id DESC
+    </select>
+
+    <select id="selectPageIds" resultType="string">
+        SELECT p.list_id
+        FROM t_gigab2b_product_family_index p
+        WHERE p.is_primary = 1
+          AND p.collected = 1
+          AND p.list_id IS NOT NULL
+        <if test="name != null and name != ''">
+            AND EXISTS (
+              SELECT 1 FROM t_gigab2b_product_family_index m
+              WHERE m.family_sku = p.family_sku
+                AND m.collected = 1
+                AND (
+                  m.sku LIKE CONCAT('%', #{name}, '%')
+                  OR m.product_name LIKE CONCAT('%', #{name}, '%')
+                  OR m.variant_label LIKE CONCAT('%', #{name}, '%')
+                  OR m.item_code LIKE CONCAT('%', #{name}, '%')
+                )
+            )
+        </if>
+        <if test="categoryIds != null and categoryIds.size() &gt; 0">
+            AND EXISTS (
+              SELECT 1 FROM t_gigab2b_product_family_index m
+              WHERE m.family_sku = p.family_sku
+                AND m.collected = 1
+                AND m.giga_category_id IN
+                <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">
+                    #{cid}
+                </foreach>
+            )
+        </if>
+        ORDER BY COALESCE(p.sync_time, p.create_date) DESC, p.sku DESC
         LIMIT #{offset}, #{limit}
     </select>
 
@@ -405,6 +437,63 @@
             </foreach>
         ) t
         WHERE t.rn = 1
+    </select>
+
+    <!-- ========== 主变体家族索引（列表入口） ========== -->
+    <sql id="IndexColumns">
+        i.list_id AS id,
+        i.sku AS sku,
+        i.item_code AS itemCode,
+        COALESCE(NULLIF(i.variant_label, ''), i.product_name, i.sku) AS name,
+        i.category_name AS categoryName,
+        i.giga_category_id AS gigaCategoryId,
+        i.image_url AS imageUrl,
+        NULL AS imageUrlsJson,
+        IFNULL(i.image_count, 0) AS imageCount,
+        NULL AS description,
+        IFNULL(i.qty_available, 0) AS qtyAvailable,
+        i.supplier_code AS supplierCode,
+        i.supplier_name AS supplierName,
+        i.price AS price,
+        i.exclusive_price AS exclusivePrice,
+        i.discounted_price AS discountedPrice,
+        COALESCE(i.currency, 'USD') AS currency,
+        i.sku_available AS skuAvailable,
+        i.listed_tag AS listedTag,
+        COALESCE(i.sync_time, i.create_date) AS createTime,
+        CONCAT('Giga/', IFNULL(i.source_platform, 'giga')) AS remark,
+        COALESCE(NULLIF(i.main_color, ''), i.variant_label) AS mainColor,
+        i.family_sku AS familySku
+    </sql>
+
+    <select id="selectIndexBySku" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
+        SELECT
+        <include refid="IndexColumns"/>
+        FROM t_gigab2b_product_family_index i
+        WHERE i.sku = #{sku} AND i.collected = 1
+        LIMIT 1
+    </select>
+
+    <select id="selectIndexByListIds" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
+        SELECT
+        <include refid="IndexColumns"/>
+        FROM t_gigab2b_product_family_index i
+        WHERE i.list_id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <select id="selectIndexMembersByFamilySkus" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
+        SELECT
+        <include refid="IndexColumns"/>
+        FROM t_gigab2b_product_family_index i
+        WHERE i.collected = 1
+          AND i.family_sku IN
+        <foreach collection="familySkus" item="sku" open="(" separator="," close=")">
+            #{sku}
+        </foreach>
+        ORDER BY i.family_sku, i.sort_no, i.sku
     </select>
 
 </mapper>

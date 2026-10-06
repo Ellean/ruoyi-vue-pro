@@ -36,8 +36,10 @@ public class XqCategoryFieldTemplateRespVO {
         private String defaultValue;
         /** 该类目配置的 AI/商品映射，如 ai_title */
         private String valueSource;
-        /** 人工分区：copy=描述 product=产品 attr=属性 */
+        /** 人工分区：copy/product/attr 或用户分区 id */
         private String zone;
+        /** 该字段出现在多少个原分类模板中 */
+        private Integer sourceCount;
     }
 
 }

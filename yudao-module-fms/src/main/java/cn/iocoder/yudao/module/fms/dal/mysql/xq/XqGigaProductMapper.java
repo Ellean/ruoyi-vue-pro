@@ -31,4 +31,10 @@ public interface XqGigaProductMapper {
 
     List<XqGigaProductRow> selectListBySkus(@Param("skus") Collection<String> skus);
 
+    XqGigaProductRow selectIndexBySku(@Param("sku") String sku);
+
+    List<XqGigaProductRow> selectIndexByListIds(@Param("ids") Collection<String> ids);
+
+    List<XqGigaProductRow> selectIndexMembersByFamilySkus(@Param("familySkus") Collection<String> familySkus);
+
 }

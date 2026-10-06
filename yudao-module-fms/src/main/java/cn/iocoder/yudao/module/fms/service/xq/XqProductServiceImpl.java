@@ -105,20 +105,38 @@ public class XqProductServiceImpl implements XqProductService {
         if (CollUtil.isEmpty(ids)) {
             return new PageResult<>(Collections.emptyList(), total);
         }
-        List<XqGigaProductRow> rows = gigaProductMapper.selectListByIds(ids);
+        List<XqGigaProductRow> rows = gigaProductMapper.selectIndexByListIds(ids);
         Map<String, XqGigaProductRow> byId = new LinkedHashMap<>();
         for (XqGigaProductRow row : rows) {
             byId.put(row.getId(), row);
         }
-        // 保持分页顺序
-        List<XqProductRespVO> list = new ArrayList<>(ids.size());
-        for (String id : ids) {
-            XqGigaProductRow row = byId.get(id);
-            if (row != null) {
-                list.add(toResp(row, false));
+        if (byId.isEmpty()) {
+            rows = gigaProductMapper.selectListByIds(ids);
+            byId.clear();
+            for (XqGigaProductRow row : rows) {
+                byId.put(row.getId(), row);
             }
         }
-        hydrateVariantCovers(list);
+        List<XqProductRespVO> list = new ArrayList<>(ids.size());
+        Set<String> familySkus = new LinkedHashSet<>();
+        boolean fromIndex = true;
+        for (String id : ids) {
+            XqGigaProductRow row = byId.get(id);
+            if (row == null) {
+                continue;
+            }
+            if (StrUtil.isBlank(row.getFamilySku())) {
+                fromIndex = false;
+            } else {
+                familySkus.add(row.getFamilySku());
+            }
+            list.add(toResp(row, false));
+        }
+        if (fromIndex && !familySkus.isEmpty()) {
+            attachFamilyVariants(list, gigaProductMapper.selectIndexMembersByFamilySkus(familySkus));
+        } else {
+            hydrateVariantCovers(list);
+        }
         return new PageResult<>(list, total);
     }
 
@@ -129,7 +147,16 @@ public class XqProductServiceImpl implements XqProductService {
             throw exception(XQ_PRODUCT_NOT_EXISTS);
         }
         XqProductRespVO vo = toResp(row, true);
-        hydrateVariantDetails(vo, row);
+        XqGigaProductRow idx = gigaProductMapper.selectIndexBySku(row.getSku());
+        if (idx != null && StrUtil.isNotBlank(idx.getFamilySku())) {
+            vo.setFamilySku(idx.getFamilySku());
+            attachFamilyVariants(Collections.singletonList(vo),
+                    gigaProductMapper.selectIndexMembersByFamilySkus(
+                            Collections.singletonList(idx.getFamilySku())));
+        } else {
+            vo.setVariants(buildVariantStubs(row));
+            hydrateVariantDetails(vo, row);
+        }
         return vo;
     }
 
@@ -159,9 +186,69 @@ public class XqProductServiceImpl implements XqProductService {
                 vo.setImageCount(0);
             }
         }
-        vo.setMainColor(row.getMainColor());
-        vo.setVariants(buildVariantStubs(row));
+        vo.setMainColor(XqGigaAssociateSupport.clean(row.getMainColor()));
+        vo.setFamilySku(row.getFamilySku());
+        vo.setVariants(new ArrayList<>());
+        if (withGallery) {
+            vo.setUpc(XqGigaAssociateSupport.clean(row.getUpc()));
+            vo.setLengthUnit(XqGigaAssociateSupport.clean(row.getLengthUnit()));
+            vo.setWeightUnit(XqGigaAssociateSupport.clean(row.getWeightUnit()));
+            vo.setAssembledLengthUnit(XqGigaAssociateSupport.clean(row.getAssembledLengthUnit()));
+            vo.setAssembledWeightUnit(XqGigaAssociateSupport.clean(row.getAssembledWeightUnit()));
+            vo.setMainMaterial(XqGigaAssociateSupport.clean(row.getMainMaterial()));
+            vo.setPlaceOfOrigin(XqGigaAssociateSupport.clean(row.getPlaceOfOrigin()));
+            vo.setBrandName(XqGigaAssociateSupport.clean(row.getBrandName()));
+            vo.setCharacteristics(XqGigaAssociateSupport.clean(row.getCharacteristics()));
+            vo.setAttributesJson(XqGigaAssociateSupport.clean(row.getAttributesJson()));
+        } else {
+            vo.setUpc(null);
+            vo.setAttributesJson(null);
+            vo.setCharacteristics(null);
+        }
         return vo;
+    }
+
+    private void attachFamilyVariants(List<XqProductRespVO> list, List<XqGigaProductRow> members) {
+        if (CollUtil.isEmpty(list) || CollUtil.isEmpty(members)) {
+            return;
+        }
+        Map<String, List<XqGigaProductRow>> byFamily = new LinkedHashMap<>();
+        for (XqGigaProductRow row : members) {
+            if (row == null || StrUtil.isBlank(row.getFamilySku())) {
+                continue;
+            }
+            byFamily.computeIfAbsent(row.getFamilySku(), k -> new ArrayList<>()).add(row);
+        }
+        for (XqProductRespVO vo : list) {
+            String family = vo.getFamilySku();
+            if (StrUtil.isBlank(family)) {
+                continue;
+            }
+            List<XqProductRespVO.Variant> variants = new ArrayList<>();
+            for (XqGigaProductRow row : byFamily.getOrDefault(family, Collections.emptyList())) {
+                if (StrUtil.equals(row.getSku(), vo.getSku())) {
+                    continue;
+                }
+                variants.add(toVariant(row));
+            }
+            vo.setVariants(variants);
+        }
+    }
+
+    private XqProductRespVO.Variant toVariant(XqGigaProductRow row) {
+        XqProductRespVO.Variant v = new XqProductRespVO.Variant();
+        v.setId(row.getId());
+        v.setSku(row.getSku());
+        v.setItemCode(StrUtil.blankToDefault(row.getItemCode(), row.getSku()));
+        v.setImageUrl(row.getImageUrl());
+        v.setQtyAvailable(row.getQtyAvailable());
+        v.setPrice(row.getPrice());
+        v.setDiscountedPrice(row.getDiscountedPrice());
+        String color = XqGigaAssociateSupport.clean(row.getMainColor());
+        v.setMainColor(color);
+        v.setName(StrUtil.blankToDefault(XqGigaAssociateSupport.clean(row.getName()),
+                StrUtil.blankToDefault(color, row.getSku())));
+        return v;
     }
 
     private List<XqProductRespVO.Variant> buildVariantStubs(XqGigaProductRow row) {
@@ -203,6 +290,10 @@ public class XqProductServiceImpl implements XqProductService {
             bySku.put(row.getSku(), row);
         }
         for (XqProductRespVO vo : list) {
+            if (vo.getVariants() == null) {
+                vo.setVariants(new ArrayList<>());
+                continue;
+            }
             for (XqProductRespVO.Variant v : vo.getVariants()) {
                 XqGigaProductRow row = bySku.get(v.getSku());
                 if (row == null) {
@@ -213,12 +304,15 @@ public class XqProductServiceImpl implements XqProductService {
                 v.setQtyAvailable(row.getQtyAvailable());
                 v.setPrice(row.getPrice());
                 v.setDiscountedPrice(row.getDiscountedPrice());
-                v.setMainColor(StrUtil.blankToDefault(row.getMainColor(), v.getMainColor()));
-                if (StrUtil.isBlank(v.getName()) || v.getName().equals(v.getSku())) {
+                String color = XqGigaAssociateSupport.clean(row.getMainColor());
+                v.setMainColor(StrUtil.blankToDefault(color, XqGigaAssociateSupport.clean(v.getMainColor())));
+                if (StrUtil.isBlank(v.getName()) || v.getName().equals(v.getSku())
+                        || "null".equalsIgnoreCase(v.getName())) {
                     v.setName(XqGigaAssociateSupport.variantLabel(
-                            v.getSku(), row.getMainColor(), row.getAssociateProductInfoJson()));
+                            v.getSku(), color, row.getAssociateProductInfoJson()));
                 }
             }
+            vo.getVariants().removeIf(v -> StrUtil.isBlank(v.getId()));
         }
     }
 
@@ -262,10 +356,12 @@ public class XqProductServiceImpl implements XqProductService {
             v.setQtyAvailable(sib.getQtyAvailable());
             v.setPrice(sib.getPrice());
             v.setDiscountedPrice(sib.getDiscountedPrice());
-            v.setMainColor(StrUtil.blankToDefault(sib.getMainColor(), v.getMainColor()));
+            String color = XqGigaAssociateSupport.clean(sib.getMainColor());
+            v.setMainColor(StrUtil.blankToDefault(color, XqGigaAssociateSupport.clean(v.getMainColor())));
             v.setName(XqGigaAssociateSupport.variantLabel(
-                    sib.getSku(), sib.getMainColor(), sib.getAssociateProductInfoJson()));
+                    v.getSku(), color, row.getAssociateProductInfoJson()));
         }
+        stubs.removeIf(v -> StrUtil.isBlank(v.getId()));
         vo.setVariants(stubs);
     }
 

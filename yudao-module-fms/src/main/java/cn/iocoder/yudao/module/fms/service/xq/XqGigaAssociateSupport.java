@@ -20,7 +20,8 @@ import java.util.regex.Pattern;
 public final class XqGigaAssociateSupport {
 
     private static final Pattern COLOR_SUFFIX = Pattern.compile("^(.*\\d)[A-Za-z]$");
-    private static final int MAX_FAMILY = 12;
+    /** 解析上限；真正展示前会丢掉未收藏 SKU */
+    private static final int MAX_FAMILY = 80;
 
     private XqGigaAssociateSupport() {
     }
@@ -55,10 +56,10 @@ public final class XqGigaAssociateSupport {
                 if (!(o instanceof JSONObject jo)) {
                     continue;
                 }
-                String sku = StrUtil.blankToDefault(jo.getStr("itemCode"), jo.getStr("sku"));
-                String name = StrUtil.blankToDefault(jo.getStr("name"), jo.getStr("mainColor"));
+                String sku = clean(StrUtil.blankToDefault(jo.getStr("itemCode"), jo.getStr("sku")));
+                String name = clean(StrUtil.blankToDefault(jo.getStr("name"), jo.getStr("mainColor")));
                 if (StrUtil.isNotBlank(sku)) {
-                    map.put(sku.trim(), StrUtil.blankToDefault(name, sku.trim()));
+                    map.put(sku, StrUtil.blankToDefault(name, sku));
                 }
             }
         } catch (Exception ignored) {
@@ -106,13 +107,23 @@ public final class XqGigaAssociateSupport {
     public static String variantLabel(String sku, String mainColor, String infoJson) {
         Map<String, String> names = parseInfoNames(infoJson);
         String hit = names.get(StrUtil.trim(sku));
-        if (StrUtil.isNotBlank(hit)) {
+        if (StrUtil.isNotBlank(hit) && !"null".equalsIgnoreCase(hit)) {
             return hit;
         }
-        if (StrUtil.isNotBlank(mainColor)) {
-            return mainColor.trim();
+        String color = clean(mainColor);
+        if (StrUtil.isNotBlank(color)) {
+            return color;
         }
-        return StrUtil.blankToDefault(sku, "");
+        return StrUtil.blankToDefault(clean(sku), "");
+    }
+
+    /** JSON null / 字面量 "null" 不当成颜色名 */
+    public static String clean(String raw) {
+        String s = StrUtil.trim(raw);
+        if (StrUtil.isBlank(s) || "null".equalsIgnoreCase(s) || "undefined".equalsIgnoreCase(s)) {
+            return null;
+        }
+        return s;
     }
 
 }

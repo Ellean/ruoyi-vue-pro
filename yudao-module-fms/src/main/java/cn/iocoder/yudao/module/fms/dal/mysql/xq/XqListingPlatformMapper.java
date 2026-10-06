@@ -25,4 +25,13 @@ public interface XqListingPlatformMapper extends BaseMapperX<XqListingPlatformDO
                 .orderByAsc(XqListingPlatformDO::getName));
     }
 
+    default XqListingPlatformDO selectByCode(String code) {
+        if (code == null || code.isBlank()) {
+            return null;
+        }
+        return selectOne(new LambdaQueryWrapperX<XqListingPlatformDO>()
+                .eq(XqListingPlatformDO::getCode, code.trim())
+                .last("LIMIT 1"));
+    }
+
 }

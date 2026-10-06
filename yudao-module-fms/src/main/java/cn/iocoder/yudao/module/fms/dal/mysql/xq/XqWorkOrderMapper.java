@@ -36,6 +36,15 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eqIfPresent(XqWorkOrderDO::getListingPlatformId, reqVO.getListingPlatformId())
                 .eqIfPresent(XqWorkOrderDO::getListingShopId, reqVO.getListingShopId())
                 .eqIfPresent(XqWorkOrderDO::getListingCategoryId, reqVO.getListingCategoryId());
+        applyFlowStatus(wrapper, reqVO.getFlowStatus());
+        if (reqVO.getBoundUserId() != null) {
+            Long uid = reqVO.getBoundUserId();
+            String creator = String.valueOf(uid);
+            wrapper.and(w -> w.eq(XqWorkOrderDO::getAssigneeUserId, uid)
+                    .or().eq(XqWorkOrderDO::getCopyUserId, uid)
+                    .or().eq(XqWorkOrderDO::getImageUserId, uid)
+                    .or().eq(XqWorkOrderDO::getCreator, creator));
+        }
         if (reqVO.getMineUserId() != null) {
             wrapper.and(w -> w.eq(XqWorkOrderDO::getCopyUserId, reqVO.getMineUserId())
                     .or()
@@ -73,6 +82,36 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
         }
         wrapper.orderByDesc(XqWorkOrderDO::getId);
         return selectPage(reqVO, wrapper);
+    }
+
+    private static void applyFlowStatus(LambdaQueryWrapperX<XqWorkOrderDO> wrapper, String flowStatus) {
+        if (flowStatus == null || flowStatus.isBlank()) {
+            return;
+        }
+        switch (flowStatus) {
+            case "submitted" -> wrapper.eq(XqWorkOrderDO::getStatus, 20);
+            case "closed" -> wrapper.eq(XqWorkOrderDO::getStatus, 30);
+            case "review" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+                    .isNotNull(XqWorkOrderDO::getContentTitle)
+                    .ne(XqWorkOrderDO::getContentTitle, "");
+            case "assign" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+                    .isNull(XqWorkOrderDO::getCopyUserId)
+                    .and(w -> w.isNull(XqWorkOrderDO::getContentTitle)
+                            .or()
+                            .eq(XqWorkOrderDO::getContentTitle, ""))
+                    .and(w -> w.isNull(XqWorkOrderDO::getRpaCopyStatus)
+                            .or()
+                            .notIn(XqWorkOrderDO::getRpaCopyStatus, "running", "queued"));
+            case "writing" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+                    .and(w -> w.isNull(XqWorkOrderDO::getContentTitle)
+                            .or()
+                            .eq(XqWorkOrderDO::getContentTitle, ""))
+                    .and(w -> w.isNotNull(XqWorkOrderDO::getCopyUserId)
+                            .or()
+                            .in(XqWorkOrderDO::getRpaCopyStatus, "running", "queued"));
+            default -> {
+            }
+        }
     }
 
     @Select("SELECT DISTINCT parent_work_order_id FROM xq_work_order "

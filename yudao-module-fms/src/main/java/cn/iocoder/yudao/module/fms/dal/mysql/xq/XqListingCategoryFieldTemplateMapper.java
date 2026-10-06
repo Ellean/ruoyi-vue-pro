@@ -20,4 +20,44 @@ public interface XqListingCategoryFieldTemplateMapper
                 .last("LIMIT 1"));
     }
 
+    default java.util.List<XqListingCategoryFieldTemplateDO> selectByPlatformId(String platformId) {
+        String pid = platformId == null ? "" : platformId;
+        if (pid.isBlank()) {
+            return java.util.List.of();
+        }
+        return selectByPlatformIds(java.util.List.of(pid));
+    }
+
+    default java.util.List<XqListingCategoryFieldTemplateDO> selectByPlatformIds(
+            java.util.Collection<String> platformIds) {
+        if (platformIds == null || platformIds.isEmpty()) {
+            return java.util.List.of();
+        }
+        java.util.List<String> ids = platformIds.stream()
+                .filter(s -> s != null && !s.isBlank())
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return java.util.List.of();
+        }
+        java.util.List<XqListingCategoryFieldTemplateDO> meta = selectList(
+                new LambdaQueryWrapperX<XqListingCategoryFieldTemplateDO>()
+                        .in(XqListingCategoryFieldTemplateDO::getPlatformId, ids)
+                        .select(XqListingCategoryFieldTemplateDO::getId,
+                                XqListingCategoryFieldTemplateDO::getPlatformId,
+                                XqListingCategoryFieldTemplateDO::getCategoryId,
+                                XqListingCategoryFieldTemplateDO::getHierarchyCode));
+        java.util.List<XqListingCategoryFieldTemplateDO> out = new java.util.ArrayList<>();
+        for (XqListingCategoryFieldTemplateDO row : meta) {
+            if (row == null || row.getId() == null) {
+                continue;
+            }
+            XqListingCategoryFieldTemplateDO full = selectById(row.getId());
+            if (full != null) {
+                out.add(full);
+            }
+        }
+        return out;
+    }
+
 }

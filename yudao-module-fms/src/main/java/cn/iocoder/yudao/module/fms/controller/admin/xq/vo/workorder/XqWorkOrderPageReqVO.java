@@ -66,4 +66,10 @@ public class XqWorkOrderPageReqVO extends PageParam {
     @Schema(description = "待上架：图片已出图/已完成且尚未提交")
     private Boolean listingReady;
 
+    @Schema(description = "列表流程状态 assign/writing/review/submitted/closed")
+    private String flowStatus;
+
+    @Schema(description = "绑定账号：下发人/文案领取人/美工，后端写入，忽略前端伪造")
+    private Long boundUserId;
+
 }
