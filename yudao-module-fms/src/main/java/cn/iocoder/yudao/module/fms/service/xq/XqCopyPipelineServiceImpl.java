@@ -105,6 +105,23 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         input.put("listingCategoryId", order.getListingCategoryId());
         input.put("listingCategoryName", order.getListingCategoryName());
         input.put("originalCopy", StrUtil.blankToDefault(order.getSourceDescription(), ""));
+        JSONObject copyJson = parseCopyResultJson(order.getCopyResultJson());
+        boolean regenerate = "revise".equalsIgnoreCase(copyJson.getStr("mode"))
+                || StrUtil.isNotBlank(copyJson.getStr("revisionPrompt"));
+        String revisionPrompt = StrUtil.blankToDefault(copyJson.getStr("revisionPrompt"), "");
+        String target = StrUtil.blankToDefault(copyJson.getStr("target"), "all").toLowerCase();
+        Integer featureIndex = copyJson.getInt("featureIndex");
+        Map<String, Object> existingCopy = new LinkedHashMap<>();
+        existingCopy.put("title", StrUtil.blankToDefault(order.getContentTitle(), ""));
+        existingCopy.put("sellingPoints", parseSellingPointList(order.getContentSellingPoints()));
+        existingCopy.put("description", StrUtil.blankToDefault(copyJson.getStr("description"), ""));
+        input.put("regenerate", regenerate);
+        input.put("revisionPrompt", revisionPrompt);
+        input.put("existingCopy", existingCopy);
+        input.put("target", target);
+        if (featureIndex != null) {
+            input.put("featureIndex", featureIndex);
+        }
         List<String> sourceImages = parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl());
         if (sourceImages.isEmpty()) {
             throw exception(XQ_RPA_AI_FAIL, "任务没有参考图，无法跑文案");
@@ -154,9 +171,7 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
             throw exception(XQ_WORK_ORDER_STATUS_INVALID);
         }
-        if (order.getParentWorkOrderId() != null) {
-            return;
-        }
+        // 扁平入队：主体与勾选变体都可入队，不再按父子过滤
         enrichSourceIfNeeded(order);
         if (parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl()).isEmpty()) {
             throw exception(XQ_RPA_AI_FAIL, "任务没有参考图，无法跑文案");
@@ -235,7 +250,8 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (userId == null) {
             throw exception(XQ_RPA_CONFIG_INVALID);
         }
-        int n = limit == null ? 1 : limit;
+        // 未传 limit 时按扁平队列一次多拉（上限见 selectPendingCopyJobs=20），避免只领 1 条
+        int n = limit == null || limit < 1 ? 20 : limit;
         List<XqWorkOrderDO> orders = workOrderMapper.selectPendingCopyJobs(userId, n);
         List<Map<String, Object>> jobs = new ArrayList<>();
         for (XqWorkOrderDO order : orders) {
@@ -342,6 +358,10 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         copyResult.putIfAbsent("title", title);
         copyResult.putIfAbsent("description", description);
         copyResult.putIfAbsent("sellingPoints", selling);
+        copyResult.remove("mode");
+        copyResult.remove("revisionPrompt");
+        copyResult.remove("target");
+        copyResult.remove("featureIndex");
         Object hs = copyResult.get("highlightStyle");
         if (hs instanceof String s && s.equals(description)) {
             copyResult.remove("highlightStyle");
@@ -377,6 +397,38 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
             }
         }
         workOrderMapper.update(null, done);
+
+        // 主体成功后：未勾选独立 RPA 的变体沿用主体文案
+        if (order.getParentWorkOrderId() == null) {
+            inheritCopyToUnselectedChildren(order.getId(), title, selling, JSONUtil.toJsonStr(copyResult));
+        }
+    }
+
+    /** 未勾选变体默认使用主体跑出来的文案 */
+    private void inheritCopyToUnselectedChildren(Long rootId, String title, String selling, String copyResultJson) {
+        if (rootId == null) {
+            return;
+        }
+        List<XqWorkOrderDO> children = workOrderMapper.selectByParentIds(List.of(rootId));
+        for (XqWorkOrderDO child : children) {
+            if (child == null || child.getId() == null) {
+                continue;
+            }
+            if (Boolean.TRUE.equals(child.getCopyRpaSelected())) {
+                continue;
+            }
+            if ("queued".equals(child.getRpaCopyStatus()) || "running".equals(child.getRpaCopyStatus())) {
+                continue;
+            }
+            workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+                    .eq(XqWorkOrderDO::getId, child.getId())
+                    .set(XqWorkOrderDO::getContentTitle, title)
+                    .set(XqWorkOrderDO::getContentSellingPoints, selling)
+                    .set(XqWorkOrderDO::getCopyResultJson, copyResultJson)
+                    .set(XqWorkOrderDO::getRpaCopyStatus, "inherited")
+                    .set(XqWorkOrderDO::getRpaCopyError, null)
+                    .set(XqWorkOrderDO::getWorkflowPhase, "image"));
+        }
     }
 
     /** 下发后补齐原文案/原图；生成前再兜底一次 */
@@ -514,6 +566,31 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
 
     private static String str(Object o) {
         return o == null ? "" : String.valueOf(o).trim();
+    }
+
+    private static JSONObject parseCopyResultJson(String raw) {
+        if (StrUtil.isBlank(raw)) {
+            return new JSONObject();
+        }
+        try {
+            return JSONUtil.parseObj(raw);
+        } catch (Exception ex) {
+            return new JSONObject();
+        }
+    }
+
+    private static List<String> parseSellingPointList(String raw) {
+        if (StrUtil.isBlank(raw)) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        for (String line : raw.split("\\r?\\n+")) {
+            String s = StrUtil.trim(line.replaceFirst("^\\s*[•\\-*]\\s*", ""));
+            if (StrUtil.isNotBlank(s)) {
+                out.add(s);
+            }
+        }
+        return out;
     }
 
 }

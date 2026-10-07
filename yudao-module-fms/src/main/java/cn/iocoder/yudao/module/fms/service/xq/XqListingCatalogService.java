@@ -587,21 +587,7 @@ public class XqListingCatalogService {
             XqCategoryFieldTemplateRespVO parsed = toCategoryFieldTemplateVo(row, "");
             row.setTemplateJson(null);
             for (XqCategoryFieldTemplateRespVO.Field field : parsed.getFields()) {
-                if (field == null || StrUtil.isBlank(field.getCode())) {
-                    continue;
-                }
-                XqCategoryFieldTemplateRespVO.Field exist = byCode.get(field.getCode());
-                if (exist == null) {
-                    field.setSourceCount(1);
-                    byCode.put(field.getCode(), field);
-                    continue;
-                }
-                exist.setSourceCount((exist.getSourceCount() == null ? 1 : exist.getSourceCount()) + 1);
-                if (Boolean.TRUE.equals(field.getRequired()) && !Boolean.TRUE.equals(exist.getRequired())) {
-                    exist.setRequired(true);
-                    exist.setGroupLabel("必填");
-                    exist.setRequirementLevel(field.getRequirementLevel());
-                }
+                putPoolField(byCode, field);
             }
         }
         List<XqCategoryFieldTemplateRespVO.Field> fields;
@@ -631,12 +617,17 @@ public class XqListingCatalogService {
         Map<String, XqShopFieldConfigRespVO.Item> overlay = new HashMap<>();
         if (cfg.getFields() != null) {
             for (XqShopFieldConfigRespVO.Item item : cfg.getFields()) {
-                overlay.put(item.getCode(), item);
+                if (item == null || StrUtil.isBlank(item.getCode())) {
+                    continue;
+                }
+                String key = normalizePoolFieldCode(item.getCode());
+                // 多实例字段配置合并到基础编码；后写覆盖前写
+                overlay.put(key, item);
             }
         }
         boolean anySavedZone = overlay.values().stream().anyMatch(i -> StrUtil.isNotBlank(i.getZone()));
         for (XqCategoryFieldTemplateRespVO.Field field : fields) {
-            XqShopFieldConfigRespVO.Item item = overlay.get(field.getCode());
+            XqShopFieldConfigRespVO.Item item = overlay.get(normalizePoolFieldCode(field.getCode()));
             if (item != null) {
                 field.setDefaultValue(item.getDefaultValue());
                 field.setValueSource(item.getValueSource());
@@ -681,18 +672,34 @@ public class XqListingCatalogService {
         return ids;
     }
 
+    /**
+     * 亚马逊多实例字段（bullet_point_2、material_5）合并为基础编码，避免同名重复出现。
+     */
+    private static String normalizePoolFieldCode(String raw) {
+        String code = StrUtil.blankToDefault(raw, "").trim();
+        if (code.isEmpty()) {
+            return "";
+        }
+        return code.replaceAll("_(?:[1-9]\\d*)$", "");
+    }
+
     private static void putPoolField(
             Map<String, XqCategoryFieldTemplateRespVO.Field> byCode,
             XqCategoryFieldTemplateRespVO.Field field) {
         if (field == null || StrUtil.isBlank(field.getCode())) {
             return;
         }
-        XqCategoryFieldTemplateRespVO.Field exist = byCode.get(field.getCode());
+        String code = normalizePoolFieldCode(field.getCode());
+        if (StrUtil.isBlank(code)) {
+            return;
+        }
+        field.setCode(code);
+        XqCategoryFieldTemplateRespVO.Field exist = byCode.get(code);
         if (exist == null) {
             if (field.getSourceCount() == null) {
                 field.setSourceCount(1);
             }
-            byCode.put(field.getCode(), field);
+            byCode.put(code, field);
             return;
         }
         int add = field.getSourceCount() == null ? 1 : field.getSourceCount();
@@ -701,6 +708,9 @@ public class XqListingCatalogService {
             exist.setRequired(true);
             exist.setGroupLabel("必填");
             exist.setRequirementLevel(field.getRequirementLevel());
+        }
+        if (StrUtil.isBlank(exist.getLabel()) && StrUtil.isNotBlank(field.getLabel())) {
+            exist.setLabel(field.getLabel());
         }
     }
 

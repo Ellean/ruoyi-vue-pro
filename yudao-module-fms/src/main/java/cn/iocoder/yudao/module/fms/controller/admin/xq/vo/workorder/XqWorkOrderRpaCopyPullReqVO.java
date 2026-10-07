@@ -7,7 +7,7 @@ import lombok.Data;
 @Data
 public class XqWorkOrderRpaCopyPullReqVO {
 
-    @Schema(description = "最多领取条数，默认 1，最大 5。文案只跑主体，不含变体")
+    @Schema(description = "最多领取条数；不传默认 20（上限 20）。扁平拉取主体+勾选变体")
     private Integer limit;
 
 }

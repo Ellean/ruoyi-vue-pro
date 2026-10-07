@@ -13,7 +13,10 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderD
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderImageStatusReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderListReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCopyRpaEnqueueReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRegenerateCopyReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
+import cn.hutool.json.JSONObject;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqProductDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
@@ -287,6 +290,118 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int enqueueCopyRpa(XqWorkOrderCopyRpaEnqueueReqVO reqVO, Long userId) {
+        if (reqVO == null || reqVO.getRootId() == null) {
+            throw exception(XQ_WORK_ORDER_NOT_EXISTS);
+        }
+        XqWorkOrderDO root = validateDoing(reqVO.getRootId());
+        if (root.getParentWorkOrderId() != null) {
+            // 传入的是变体时，抬到主体
+            Long parentId = root.getParentWorkOrderId();
+            root = validateDoing(parentId);
+        }
+        List<XqWorkOrderDO> children = workOrderMapper.selectByParentIds(List.of(root.getId()));
+        Set<Long> selected = new LinkedHashSet<>();
+        selected.add(root.getId());
+        if (CollUtil.isNotEmpty(reqVO.getSelectedIds())) {
+            for (Long id : reqVO.getSelectedIds()) {
+                if (id != null) {
+                    selected.add(id);
+                }
+            }
+        }
+        // 校验 selected 都属于本家族
+        Set<Long> family = new LinkedHashSet<>();
+        family.add(root.getId());
+        for (XqWorkOrderDO c : children) {
+            if (c.getId() != null) {
+                family.add(c.getId());
+            }
+        }
+        selected.retainAll(family);
+
+        // 落库勾选标记：主体始终 true；变体按勾选
+        workOrderMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getId, root.getId())
+                .set(XqWorkOrderDO::getCopyRpaSelected, true));
+        for (XqWorkOrderDO c : children) {
+            boolean on = selected.contains(c.getId());
+            workOrderMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XqWorkOrderDO>()
+                    .eq(XqWorkOrderDO::getId, c.getId())
+                    .set(XqWorkOrderDO::getCopyRpaSelected, on));
+        }
+
+        int n = 0;
+        for (Long id : selected) {
+            XqWorkOrderDO order = workOrderMapper.selectById(id);
+            if (order == null || !Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
+                continue;
+            }
+            copyPipelineService.enqueueCopyJob(order, userId);
+            n += 1;
+        }
+        return n;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public XqWorkOrderDO regenerateCopy(XqWorkOrderRegenerateCopyReqVO reqVO, Long userId) {
+        if (reqVO == null || reqVO.getId() == null) {
+            throw exception(XQ_WORK_ORDER_NOT_EXISTS);
+        }
+        XqWorkOrderDO order = validateDoing(reqVO.getId());
+        JSONObject copyJson;
+        try {
+            copyJson = StrUtil.isBlank(order.getCopyResultJson())
+                    ? new JSONObject()
+                    : JSONUtil.parseObj(order.getCopyResultJson());
+        } catch (Exception ex) {
+            copyJson = new JSONObject();
+        }
+        String title = StrUtil.blankToDefault(reqVO.getContentTitle(), order.getContentTitle());
+        String selling = StrUtil.blankToDefault(reqVO.getContentSellingPoints(), order.getContentSellingPoints());
+        String description = StrUtil.blankToDefault(
+                reqVO.getContentDescription(), copyJson.getStr("description", ""));
+        String revisionPrompt = StrUtil.trim(StrUtil.blankToDefault(reqVO.getRevisionPrompt(), ""));
+        String target = StrUtil.blankToDefault(reqVO.getTarget(), "all").trim().toLowerCase();
+        if (!Set.of("all", "title", "description", "feature").contains(target)) {
+            target = "all";
+        }
+        Integer featureIndex = reqVO.getFeatureIndex();
+        if ("feature".equals(target)) {
+            if (featureIndex == null || featureIndex < 0) {
+                featureIndex = 0;
+            }
+        } else {
+            featureIndex = null;
+        }
+
+        copyJson.set("mode", "revise");
+        copyJson.set("revisionPrompt", revisionPrompt);
+        copyJson.set("target", target);
+        if (featureIndex != null) {
+            copyJson.set("featureIndex", featureIndex);
+        } else {
+            copyJson.remove("featureIndex");
+        }
+        if (StrUtil.isNotBlank(description)) {
+            copyJson.set("description", description);
+        }
+
+        workOrderMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getId, order.getId())
+                .set(XqWorkOrderDO::getContentTitle, StrUtil.blankToDefault(title, order.getContentTitle()))
+                .set(XqWorkOrderDO::getContentSellingPoints,
+                        StrUtil.blankToDefault(selling, order.getContentSellingPoints()))
+                .set(XqWorkOrderDO::getCopyResultJson, copyJson.toString()));
+
+        order = workOrderMapper.selectById(order.getId());
+        copyPipelineService.enqueueCopyJob(order, userId);
+        return workOrderMapper.selectById(order.getId());
+    }
+
+    @Override
     public List<XqWorkOrderDO> batchGenerateCopy(XqWorkOrderBatchIdsReqVO reqVO, Long userId) {
         if (reqVO == null || CollUtil.isEmpty(reqVO.getIds())) {
             throw exception(XQ_DISPATCH_EMPTY);
@@ -300,6 +415,26 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
     private XqWorkOrderDO generateCopyInternal(Long id, Long claimUserId) {
         XqWorkOrderDO order = validateDoing(id);
+        // 首次生成清理二次改写标记
+        if (StrUtil.isNotBlank(order.getCopyResultJson())) {
+            try {
+                JSONObject copyJson = JSONUtil.parseObj(order.getCopyResultJson());
+                if (copyJson.containsKey("mode") || copyJson.containsKey("revisionPrompt")
+                        || copyJson.containsKey("target") || copyJson.containsKey("featureIndex")) {
+                    copyJson.remove("mode");
+                    copyJson.remove("revisionPrompt");
+                    copyJson.remove("target");
+                    copyJson.remove("featureIndex");
+                    workOrderMapper.update(null,
+                            new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XqWorkOrderDO>()
+                                    .eq(XqWorkOrderDO::getId, id)
+                                    .set(XqWorkOrderDO::getCopyResultJson, copyJson.toString()));
+                    order = workOrderMapper.selectById(id);
+                }
+            } catch (Exception ignored) {
+                // ignore
+            }
+        }
         copyPipelineService.enqueueCopyJob(order, claimUserId);
         return workOrderMapper.selectById(id);
     }
@@ -426,6 +561,8 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
                 .listingCategoryName(reqVO.getListingCategoryName())
                 .workflowPhase("copy")
                 .rpaCopyStatus("idle")
+                // 主体默认勾选独立跑文案；变体默认不勾选（沿用主体）
+                .copyRpaSelected(parentId == null)
                 .build();
         workOrderMapper.insert(order);
         return order;

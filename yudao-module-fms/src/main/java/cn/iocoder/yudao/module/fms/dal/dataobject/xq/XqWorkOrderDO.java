@@ -105,5 +105,10 @@ public class XqWorkOrderDO extends BaseDO {
     private String rpaCopyStatus;
     /** 文案 RPA 失败原因 */
     private String rpaCopyError;
+    /**
+     * 是否勾选独立跑文案 RPA。
+     * 主体默认 true；变体勾选后独立入队；未勾选在主体成功后沿用主体文案。
+     */
+    private Boolean copyRpaSelected;
 
 }

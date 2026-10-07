@@ -7,7 +7,19 @@ CREATE TABLE IF NOT EXISTS `ai_api_key` (
   `name` varchar(255) NOT NULL COMMENT '名称',
   `api_key` varchar(255) NOT NULL COMMENT '密钥',
   `platform` varchar(255) NOT NULL COMMENT '平台',
-  `url` varchar(255) DEFAULT NULL COMMENT '自定义 API 地址',
+  `url` varchar(255) DEFAULT NULL COMMENT 'API Base URL（官方或中转）',
+  `gateway_type` varchar(32) DEFAULT 'openai_compatible' COMMENT '接入类型：openai_official/aixoras/hao/toapis/cun/openai_compatible/custom',
+  `capabilities` varchar(128) DEFAULT 'chat,vision' COMMENT '能力：chat,vision,image_gen,image_edit',
+  `chat_model` varchar(128) DEFAULT NULL COMMENT '对话模型（可选）',
+  `vision_model` varchar(128) DEFAULT NULL COMMENT '识图模型（可选）',
+  `image_model` varchar(128) DEFAULT NULL COMMENT '生图模型（可选）',
+  `image_edit_model` varchar(128) DEFAULT NULL COMMENT '改图模型（可选）',
+  `image_body_style` varchar(32) DEFAULT NULL COMMENT '生图请求风格（中转用）',
+  `supports_async` tinyint DEFAULT NULL COMMENT '异步生图',
+  `prefer_responses_api` tinyint DEFAULT NULL COMMENT '优先 Responses',
+  `vision_image_detail` varchar(16) DEFAULT NULL COMMENT '识图 detail',
+  `extra_config` text DEFAULT NULL COMMENT '扩展 JSON',
+  `remark` varchar(512) DEFAULT NULL COMMENT '备注',
   `status` int NOT NULL COMMENT '状态',
   `creator` varchar(64) DEFAULT '',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -16,7 +28,7 @@ CREATE TABLE IF NOT EXISTS `ai_api_key` (
   `deleted` bit(1) NOT NULL DEFAULT b'0',
   `tenant_id` bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI API 密钥表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI API 密钥（一条=官方或某一中转）';
 
 CREATE TABLE IF NOT EXISTS `ai_model` (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '编号',

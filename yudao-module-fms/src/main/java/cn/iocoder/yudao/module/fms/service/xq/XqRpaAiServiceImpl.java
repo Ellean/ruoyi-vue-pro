@@ -80,28 +80,62 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         Map<String, Object> observations = reqVO.getImageObservations() == null
                 ? Map.of() : reqVO.getImageObservations();
         List<String> sourceImages = CollUtil.emptyIfNull(reqVO.getSourceImages());
+        // 文案阶段只需：首图识图 + 原文案 + 规则；全图识图/提示词二创是后续独立步骤
+        if (!mock && StrUtil.isBlank(original) && observations.isEmpty()) {
+            throw exception(XQ_RPA_AI_FAIL, "文案生成需要原文案或首图识图结果");
+        }
         if (!mock && observations.isEmpty()) {
-            throw exception(XQ_RPA_AI_FAIL, "无实拍识图结果，拒绝空写");
+            throw exception(XQ_RPA_AI_FAIL, "文案生成缺少首图识图结果，请先对本机首图做识图");
         }
 
         if (mock) {
             return mockCopy(sku, title0, original, rule);
         }
 
-        String system = "你是亚马逊/跨境电商文案优化助手。只输出一个完整 JSON，禁止截断、禁止 markdown。"
+        boolean regenerate = Boolean.TRUE.equals(reqVO.getRegenerate())
+                || StrUtil.isNotBlank(reqVO.getRevisionPrompt())
+                || (reqVO.getExistingCopy() != null && !reqVO.getExistingCopy().isEmpty());
+        String revisionPrompt = StrUtil.blankToDefault(reqVO.getRevisionPrompt(), "");
+        Map<String, Object> existingCopy = reqVO.getExistingCopy() == null
+                ? Map.of() : reqVO.getExistingCopy();
+        String system = "你是亚马逊/跨境电商文案优化助手。文案生成与图片提示词生成是两个独立概念："
+                + "本任务只生成文案，不写生图提示词。"
+                + "只输出一个完整 JSON，禁止截断、禁止 markdown。"
                 + "字段：{\"title\":\"完整英文标题\",\"sellingPoints\":[\"完整英文句子\"],"
-                + "\"description\":\"完整英文长描述\",\"highlightStyle\":[\"中文标签\"]}。"
-                + "必须依据 imageObservations（实拍识图结果）和 originalCopy 写，禁止编造图上没有的材质、配件、尺寸、认证。"
-                + "图上看不到的信息不要写进卖点和描述。"
+                + "\"description\":\"完整英文长描述\",\"highlightStyle\":[\"中文特征点\"]}。"
+                + "输入只有：1) imageObservations（仅首图识图，不是全套图）；2) originalCopy 原文案；3) rules 规则。"
+                + "必须依据首图可见信息与原文案写 title/sellingPoints/description，禁止编造图上与原文都没有的材质、配件、尺寸、认证。"
                 + "title、sellingPoints、description 必须是完整英文句子，以句号结尾。"
-                + "sellingPoints 条数必须等于指定卖点数。"
+                + "sellingPoints 条数必须等于指定卖点数（5 或 8，按 rules）。"
                 + "description 4到8句、不少于80个英文单词。"
-                + "highlightStyle 必须是 4 到 8 个中文短标签（每项 2 到 8 字），来自实拍风格/材质/场景，给生图勾选。"
-                + "禁止把 highlightStyle 写成一整句话，禁止英文标签。";
+                + "highlightStyle 是给后续生图用的中文特征点：4 到 8 个中文短标签（每项 2 到 8 字），"
+                + "综合首图与原文案提炼材质/外形/场景/工艺特征；禁止英文、禁止整句。"
+                + "不要输出 imagePrompts，不要按全套图逐张描述。";
+        String target = StrUtil.blankToDefault(reqVO.getTarget(), "all").trim().toLowerCase();
+        Integer featureIndex = reqVO.getFeatureIndex();
+        if (regenerate) {
+            system += "这是二次改写任务：必须参考 existingCopy（当前标题/卖点/长描述）和 revisionPrompt（用户提示词）。";
+            if ("title".equals(target)) {
+                system += "只改写 title，sellingPoints/description/highlightStyle 必须原样返回 existingCopy 中的值。";
+            } else if ("description".equals(target)) {
+                system += "只改写 description，title/sellingPoints/highlightStyle 必须原样返回 existingCopy 中的值。";
+            } else if ("feature".equals(target)) {
+                system += "只改写 sellingPoints 中下标为 featureIndex 的那一条，其余卖点与 title/description/highlightStyle 必须原样返回。";
+            } else {
+                system += "未要求改动的部分尽量保留；按提示词做针对性优化，不要无视现有文案整篇重写。";
+            }
+        }
         Map<String, Object> user = new LinkedHashMap<>();
         user.put("sku", sku);
         user.put("productTitle", title0);
         user.put("originalCopy", StrUtil.maxLength(original, 4000));
+        user.put("regenerate", regenerate);
+        user.put("revisionPrompt", StrUtil.maxLength(revisionPrompt, 2000));
+        user.put("existingCopy", existingCopy);
+        user.put("target", target);
+        if (featureIndex != null) {
+            user.put("featureIndex", featureIndex);
+        }
         user.put("imageObservations", observations);
         user.put("sourceImageCount", sourceImages.size());
         user.put("featureCount", rule.featureCount);
@@ -129,26 +163,81 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         if (highlightTags.isEmpty()) {
             highlightTags = fallbackHighlightTags(points, desc);
         }
+
+        // 局部改写：服务端再强制合并，防止模型误改其它字段
+        if (regenerate && !"all".equals(target)) {
+            String existTitle = str(existingCopy.get("title"));
+            String existDesc = str(existingCopy.get("description"));
+            List<String> existPoints = normalizePoints(existingCopy.get("sellingPoints"));
+            existPoints = padPoints(existPoints, rule.featureCount, Math.max(rule.featureMaxLen, 400));
+            if ("title".equals(target)) {
+                points = existPoints;
+                desc = StrUtil.blankToDefault(existDesc, desc);
+            } else if ("description".equals(target)) {
+                title = StrUtil.blankToDefault(existTitle, title);
+                points = existPoints;
+            } else if ("feature".equals(target)) {
+                title = StrUtil.blankToDefault(existTitle, title);
+                desc = StrUtil.blankToDefault(existDesc, desc);
+                int idx = featureIndex == null ? 0 : featureIndex;
+                List<String> merged = new ArrayList<>(existPoints);
+                while (merged.size() < rule.featureCount) {
+                    merged.add("");
+                }
+                String newPoint = points.size() > idx ? points.get(idx) : "";
+                if (StrUtil.isBlank(newPoint) && !points.isEmpty()) {
+                    newPoint = points.get(0);
+                }
+                if (idx >= 0 && idx < merged.size() && StrUtil.isNotBlank(newPoint)) {
+                    merged.set(idx, newPoint);
+                }
+                points = padPoints(merged, rule.featureCount, Math.max(rule.featureMaxLen, 400));
+            }
+        }
+
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("title", title);
         out.put("sellingPoints", points);
         out.put("description", desc);
         out.put("highlightStyle", highlightTags);
+        // 与 highlightStyle 同义，供 RPA 图片二创阶段显式读取中文特征点
+        out.put("featurePoints", highlightTags);
         return out;
     }
 
     @Override
     public Map<String, Object> getVisionProfile(String callbackToken) {
         assertToken(callbackToken);
-        AiModelDO model = aiModelService.getRequiredDefaultModel(AiModelTypeEnum.CHAT.getType());
+        AiModelDO model;
+        try {
+            model = aiModelService.getRequiredDefaultModel(AiModelTypeEnum.CHAT.getType());
+        } catch (Exception ex) {
+            // 原错误「找不到默认模型」对运营不直观：本机识图依赖已启用的 Chat 模型（需支持看图）
+            throw exception(XQ_RPA_AI_FAIL,
+                    "找不到可用的识图对话模型。请到后台【AI 大模型 → 模型】启用至少一个「对话 Chat」模型（建议选带视觉的，如 gpt-4o），并绑定有效 API Key");
+        }
         AiApiKeyDO key = aiApiKeyService.validateApiKey(model.getKeyId());
+        // 中转密钥上可单独配识图模型；优先 visionModel → chatModel → 绑定的 ai_model.model
+        String visionModelName = StrUtil.blankToDefault(key.getVisionModel(),
+                StrUtil.blankToDefault(key.getChatModel(), model.getModel()));
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("platform", model.getPlatform());
-        out.put("model", model.getModel());
+        out.put("model", visionModelName);
         out.put("baseUrl", StrUtil.blankToDefault(key.getUrl(), ""));
         out.put("apiKey", StrUtil.blankToDefault(key.getApiKey(), ""));
         out.put("temperature", model.getTemperature() != null ? model.getTemperature() : 0.3);
         out.put("maxTokens", model.getMaxTokens() != null ? model.getMaxTokens() : 4096);
+        out.put("gatewayType", StrUtil.blankToDefault(key.getGatewayType(), "openai_compatible"));
+        out.put("capabilities", StrUtil.blankToDefault(key.getCapabilities(), "chat,vision"));
+        out.put("preferResponsesApi", Integer.valueOf(1).equals(key.getPreferResponsesApi()));
+        out.put("visionImageDetail", StrUtil.blankToDefault(key.getVisionImageDetail(), "low"));
+        out.put("imageBodyStyle", StrUtil.blankToDefault(key.getImageBodyStyle(), ""));
+        out.put("supportsAsync", Integer.valueOf(1).equals(key.getSupportsAsync()));
+        out.put("imageModel", StrUtil.blankToDefault(key.getImageModel(), ""));
+        out.put("imageEditModel", StrUtil.blankToDefault(key.getImageEditModel(),
+                StrUtil.blankToDefault(key.getImageModel(), "")));
+        out.put("extraConfig", StrUtil.blankToDefault(key.getExtraConfig(), ""));
+        out.put("keyName", StrUtil.blankToDefault(key.getName(), ""));
         return out;
     }
 
@@ -210,14 +299,19 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         }
         Map<Integer, String> promptByIndex = new LinkedHashMap<>();
         if (!mock) {
-            String system = "你是电商生图提示词专家。只根据 images[].imageType、卖点和已选中文风格标签写提示词。"
-                    + "不要假设看过原图像素。只返回 JSON："
-                    + "[{\"index\":0,\"imageType\":\"scene\",\"promptText\":\"场景图\\n中文提示词\"}]。"
+            String system = "你是电商生图提示词二创专家。文案已完成，本任务只写图片提示词。"
+                    + "必须依据中文特征点(highlightStyle)、英文卖点、以及每张图的 imageType/imageLabel 标识做二次创作。"
+                    + "禁止完全按原图临摹；可保留产品真实外形/材质/颜色，优化构图与场景干净度。"
+                    + "只返回 JSON："
+                    + "[{\"index\":0,\"imageType\":\"scene\",\"imageLabel\":\"图1-场景图\",\"promptText\":\"场景图\\n中文提示词\"}]。"
                     + "promptText 必须全部中文：第一行是图名（主图-卖点/尺寸图/细节图/场景图/包装图/参考图），"
-                    + "后面用中文写构图、材质、光线、背景、要突出的标签。禁止英文句子、禁止半截词。";
+                    + "后面用中文写构图、材质、光线、背景、要突出的特征点。禁止英文句子、禁止半截词。";
             Map<String, Object> user = new LinkedHashMap<>();
             user.put("title", copy.get("title"));
             user.put("highlightStyle", copy.get("highlightStyle"));
+            user.put("featurePoints", copy.get("featurePoints") != null ? copy.get("featurePoints") : copy.get("highlightStyle"));
+            user.put("sellingPoints", points);
+            user.put("creativeMode", "feature_based_rewrite");
             user.put("rulePrompt", StrUtil.maxLength(baseHint, 300));
             user.put("negativePrompt", StrUtil.maxLength(neg, 200));
             user.put("images", batch);
@@ -350,11 +444,13 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         if (desc.length() > rule.descriptionMaxLen) {
             desc = desc.substring(0, rule.descriptionMaxLen);
         }
+        List<String> tags = List.of("简洁电商风", "材质特写", "日常使用场景");
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("title", title);
         out.put("sellingPoints", points);
         out.put("description", desc);
-        out.put("highlightStyle", List.of("简洁电商风", "材质特写", "日常使用场景"));
+        out.put("highlightStyle", tags);
+        out.put("featurePoints", tags);
         return out;
     }
 
@@ -366,11 +462,23 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
             row.put("index", i);
             row.put("imageUrl", images.get(i));
             row.put("imageType", t);
+            row.put("imageLabel", "图" + (i + 1) + "-" + typeCn(t));
             row.put("marker", TYPE_MARKERS.get(t));
             row.put("bindIndexes", "dimension".equals(t) && i != 0 ? List.of(0, i) : List.of(i));
             out.add(row);
         }
         return out;
+    }
+
+    private static String typeCn(String t) {
+        return switch (StrUtil.blankToDefault(t, "other")) {
+            case "main" -> "主图";
+            case "dimension" -> "尺寸图";
+            case "detail" -> "细节图";
+            case "scene" -> "场景图";
+            case "package" -> "包装图";
+            default -> "参考图";
+        };
     }
 
     /** 禁止把第 2 张默认当尺寸图；尺寸图必须文件名像工程图，否则宁可不标 */

@@ -447,8 +447,16 @@ public class AiModelFactoryImpl implements AiModelFactory {
                 .build();
     }
 
+    /**
+     * Spring AI OpenAI 默认超时约 60s；识图/中转站常超过该值，OkHttp 会抛 InterruptedIOException: timeout。
+     * 动态创建的 Chat/Image 客户端统一拉长，避免对话/RPA 识图被默认 callTimeout 掐断。
+     */
+    private static final Duration OPENAI_HTTP_TIMEOUT = Duration.ofMinutes(10);
+
     private static OpenAiChatOptions.Builder buildOpenAiChatOptions(String apiKey, String url) {
-        OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder().apiKey(apiKey);
+        OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
+                .apiKey(apiKey)
+                .timeout(OPENAI_HTTP_TIMEOUT);
         if (StrUtil.isNotEmpty(url)) {
             optionsBuilder.baseUrl(normalizeOpenAiBaseUrl(url));
         }
@@ -511,7 +519,9 @@ public class AiModelFactoryImpl implements AiModelFactory {
      * 使用 {@link CompatibleOpenAiImageModel}：中转常返回空 url + b64_json，官方 OpenAiImageModel 会误丢 b64。
      */
     private ImageModel buildOpenAiImageModel(String openAiToken, String url) {
-        OpenAiImageOptions.Builder optionsBuilder = OpenAiImageOptions.builder().apiKey(openAiToken);
+        OpenAiImageOptions.Builder optionsBuilder = OpenAiImageOptions.builder()
+                .apiKey(openAiToken)
+                .timeout(OPENAI_HTTP_TIMEOUT);
         if (StrUtil.isNotEmpty(url)) {
             optionsBuilder.baseUrl(normalizeOpenAiBaseUrl(url));
         }

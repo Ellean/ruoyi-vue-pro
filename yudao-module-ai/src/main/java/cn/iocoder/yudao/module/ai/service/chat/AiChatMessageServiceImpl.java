@@ -1,6 +1,5 @@
 package cn.iocoder.yudao.module.ai.service.chat;
 
-import cn.hutool.core.codec.Base64;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.io.file.FileNameUtil;
 import cn.hutool.core.util.ObjUtil;
@@ -48,17 +47,25 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.StreamingChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.content.Media;
 import org.springframework.ai.mcp.SyncMcpToolCallbackProvider;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.resolution.ToolCallbackResolver;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.MimeTypeUtils;
 import reactor.core.publisher.Flux;
 
 import java.time.LocalDateTime;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -70,6 +77,7 @@ import static cn.iocoder.yudao.framework.common.util.collection.CollectionUtils.
 import static cn.iocoder.yudao.framework.common.util.collection.CollectionUtils.convertSet;
 import static cn.iocoder.yudao.module.ai.enums.ErrorCodeConstants.CHAT_CONVERSATION_NOT_EXISTS;
 import static cn.iocoder.yudao.module.ai.enums.ErrorCodeConstants.CHAT_MESSAGE_NOT_EXIST;
+import static cn.iocoder.yudao.module.ai.enums.ErrorCodeConstants.CHAT_MODEL_NO_VISION;
 
 /**
  * AI 聊天消息 Service 实现类
@@ -147,6 +155,7 @@ public class AiChatMessageServiceImpl implements AiChatMessageService {
         List<AiChatMessageDO> historyMessages = chatMessageMapper.selectListByConversationId(conversation.getId());
         // 1.2 校验模型
         AiModelDO model = modalService.validateModel(conversation.getModelId());
+        assertVisionModelIfHasImages(model, sendReqVO.getAttachmentUrls());
         ChatModel chatModel = modalService.getChatModel(model.getId());
 
         // 2.1 知识库召回
@@ -204,6 +213,8 @@ public class AiChatMessageServiceImpl implements AiChatMessageService {
         List<AiChatMessageDO> historyMessages = chatMessageMapper.selectListByConversationId(conversation.getId());
         // 1.2 校验模型
         AiModelDO model = modalService.validateModel(conversation.getModelId());
+        // 1.3 带图时禁止选无视觉能力的模型（如 gpt-3.5-turbo），否则上游只报 Request failed
+        assertVisionModelIfHasImages(model, sendReqVO.getAttachmentUrls());
         StreamingChatModel chatModel = modalService.getChatModel(model.getId());
 
         // 2.1 知识库找回
@@ -298,7 +309,79 @@ public class AiChatMessageServiceImpl implements AiChatMessageService {
                     chatMessageMapper.deleteById(assistantMessage.getId());
                 }
             });
-        }).onErrorResume(error -> Flux.just(error(ErrorCodeConstants.CHAT_STREAM_ERROR)));
+        }).onErrorResume(error -> {
+            log.error("[sendChatMessageStream][userId({}) sendReqVO({}) 发生异常]", userId, sendReqVO, error);
+            String detail = StrUtil.maxLength(resolveThrowableDetail(error), 220);
+            return Flux.just(error(new cn.iocoder.yudao.framework.common.exception.ErrorCode(
+                    ErrorCodeConstants.CHAT_STREAM_ERROR.getCode(),
+                    StrUtil.isBlank(detail) ? "对话生成异常!" : ("对话生成异常! " + detail))));
+        });
+    }
+
+    /** 上传图片时校验当前会话模型是否具备视觉能力 */
+    private void assertVisionModelIfHasImages(AiModelDO model, List<String> attachmentUrls) {
+        if (CollUtil.isEmpty(attachmentUrls) || model == null) {
+            return;
+        }
+        boolean hasImage = false;
+        for (String url : attachmentUrls) {
+            if (StrUtil.isBlank(url)) {
+                continue;
+            }
+            if (FileTypeUtils.isImage(FileTypeUtils.getMineType(FileNameUtil.getName(url)))) {
+                hasImage = true;
+                break;
+            }
+        }
+        if (!hasImage) {
+            return;
+        }
+        String name = StrUtil.blankToDefault(model.getModel(), "").toLowerCase();
+        // 明确无视觉：gpt-3.5 / 纯文本 instruct 等
+        boolean noVision = name.contains("gpt-3.5")
+                || name.contains("instruct")
+                || name.contains("text-embedding")
+                || name.equals("gpt-4")
+                || name.startsWith("gpt-4-0314")
+                || name.startsWith("gpt-4-0613");
+        if (noVision) {
+            throw exception(CHAT_MODEL_NO_VISION, model.getModel());
+        }
+    }
+
+    private static String resolveThrowableDetail(Throwable error) {
+        if (error == null) {
+            return "";
+        }
+        String best = StrUtil.blankToDefault(error.getMessage(), "");
+        Throwable cur = error;
+        int depth = 0;
+        while (cur != null && depth++ < 8) {
+            String msg = StrUtil.blankToDefault(cur.getMessage(), "");
+            if (StrUtil.isNotBlank(msg) && !StrUtil.equalsIgnoreCase(msg, "Request failed")) {
+                best = msg;
+            }
+            // OpenAI Java SDK：尽量带上 HTTP 状态
+            try {
+                var method = cur.getClass().getMethod("statusCode");
+                Object code = method.invoke(cur);
+                if (code != null && StrUtil.isNotBlank(msg)) {
+                    best = code + " " + msg;
+                }
+            } catch (ReflectiveOperationException ignored) {
+                // ignore
+            }
+            cur = cur.getCause();
+        }
+        if (StrUtil.containsIgnoreCase(best, "timeout")
+                || StrUtil.containsIgnoreCase(best, "InterruptedIOException")) {
+            return "上游识图请求超时，请稍后重试；若持续出现请检查中转站连通性或换更快的视觉模型。原始错误：" + best;
+        }
+        if (StrUtil.containsIgnoreCase(best, "Request failed")
+                || StrUtil.containsIgnoreCase(best, "OpenAIIOException")) {
+            best = best + "（请确认：1) 右上角已选带视觉模型如 gpt-5.6-terra；2) API 密钥 URL/Key 可用；3) 服务端能访问图片地址）";
+        }
+        return best;
     }
 
     private List<AiKnowledgeSegmentSearchRespBO> recallKnowledgeSegment(String content,
@@ -331,19 +414,19 @@ public class AiChatMessageServiceImpl implements AiChatMessageService {
             chatMessages.add(new SystemMessage(conversation.getSystemMessage()));
         }
 
-        // 1.2 历史 history message 历史消息
+        // 1.2 历史 history message 历史消息（用户消息含图时走多模态 Media，不再把 Base64 当纯文本）
         List<AiChatMessageDO> contextMessages = filterContextMessages(messages, conversation, sendReqVO);
         contextMessages.forEach(message -> {
-            chatMessages.add(AiUtils.buildMessage(message.getType(), message.getContent()));
-            UserMessage attachmentUserMessage = buildAttachmentUserMessage(message.getAttachmentUrls());
-            if (attachmentUserMessage != null) {
-                chatMessages.add(attachmentUserMessage);
+            if (MessageType.USER.getValue().equals(message.getType())) {
+                chatMessages.add(buildUserMessageWithAttachments(message.getContent(), message.getAttachmentUrls()));
+            } else {
+                chatMessages.add(AiUtils.buildMessage(message.getType(), message.getContent()));
             }
             // TODO @芋艿：历史的知识库；历史的搜索，要不要拼接？
         });
 
-        // 1.3 当前 user message 新发送消息
-        chatMessages.add(new UserMessage(sendReqVO.getContent()));
+        // 1.3 当前 user message：文字 + 图片同一条多模态消息（识图必需）
+        chatMessages.add(buildUserMessageWithAttachments(sendReqVO.getContent(), sendReqVO.getAttachmentUrls()));
 
         // 1.4 知识库，通过 UserMessage 实现
         if (CollUtil.isNotEmpty(knowledgeSegments)) {
@@ -364,14 +447,6 @@ public class AiChatMessageServiceImpl implements AiChatMessageService {
                     })
                     .collect(Collectors.joining("\n\n"));
             chatMessages.add(new UserMessage(String.format(WEB_SEARCH_USER_MESSAGE_TEMPLATE, webSearch)));
-        }
-
-        // 1.6 附件，通过 UserMessage 实现
-        if (CollUtil.isNotEmpty(sendReqVO.getAttachmentUrls())) {
-            UserMessage attachmentUserMessage = buildAttachmentUserMessage(sendReqVO.getAttachmentUrls());
-            if (attachmentUserMessage != null) {
-                chatMessages.add(attachmentUserMessage);
-            }
         }
 
         // 2.1 查询 tool 工具
@@ -466,40 +541,66 @@ public class AiChatMessageServiceImpl implements AiChatMessageService {
         return contextMessages;
     }
 
-    private UserMessage buildAttachmentUserMessage(List<String> attachmentUrls) {
+    /**
+     * 构建用户消息：图片走 Spring AI {@link Media} 多模态；文档仍拼文本 Attachment。
+     * 旧实现把图片 Base64 塞进纯文本，gpt-5.6-terra 等识图模型无法真正看图，易直接对话异常。
+     */
+    private UserMessage buildUserMessageWithAttachments(String text, List<String> attachmentUrls) {
+        String content = StrUtil.blankToDefault(text, "");
         if (CollUtil.isEmpty(attachmentUrls)) {
-            return null;
+            return new UserMessage(content);
         }
-        // 读取文件内容
-        Map<String, String> attachmentContents = Maps.newLinkedHashMapWithExpectedSize(attachmentUrls.size());
+        List<Media> imageMedias = new ArrayList<>();
+        Map<String, String> docContents = Maps.newLinkedHashMapWithExpectedSize(attachmentUrls.size());
         for (String attachmentUrl : attachmentUrls) {
+            if (StrUtil.isBlank(attachmentUrl)) {
+                continue;
+            }
             try {
                 String name = FileNameUtil.getName(attachmentUrl);
-                String mineType = FileTypeUtils.getMineType(name);
-                String content;
-                if (FileTypeUtils.isImage(mineType)) {
-                    // 特殊：图片则转为 Base64
+                String mimeType = FileTypeUtils.getMineType(name);
+                if (FileTypeUtils.isImage(mimeType)) {
                     byte[] bytes = HttpUtil.downloadBytes(attachmentUrl);
-                    content = Base64.encode(bytes);
+                    if (bytes == null || bytes.length == 0) {
+                        log.warn("[buildUserMessageWithAttachments][图片为空 url={}]", attachmentUrl);
+                        continue;
+                    }
+                    if (bytes.length > 8 * 1024 * 1024) {
+                        log.warn("[buildUserMessageWithAttachments][图片过大 {}KB url={}，仍尝试发送]",
+                                bytes.length / 1024, attachmentUrl);
+                    }
+                    String safeMime = StrUtil.blankToDefault(mimeType, "image/jpeg");
+                    imageMedias.add(Media.builder()
+                            .mimeType(MimeTypeUtils.parseMimeType(safeMime))
+                            .data(new ByteArrayResource(bytes))
+                            .build());
                 } else {
-                    content = knowledgeDocumentService.readUrl(attachmentUrl);
-                }
-                if (StrUtil.isNotEmpty(content)) {
-                    attachmentContents.put(name, content);
+                    String doc = knowledgeDocumentService.readUrl(attachmentUrl);
+                    if (StrUtil.isNotEmpty(doc)) {
+                        docContents.put(name, doc);
+                    }
                 }
             } catch (Exception e) {
-                log.error("[buildAttachmentUserMessage][读取附件({}) 发生异常]", attachmentUrl, e);
+                log.error("[buildUserMessageWithAttachments][读取附件({}) 发生异常]", attachmentUrl, e);
             }
         }
-        if (CollUtil.isEmpty(attachmentContents)) {
-            return null;
+        if (CollUtil.isNotEmpty(docContents)) {
+            String attachment = docContents.entrySet().stream()
+                    .map(entry -> "<Attachment name=\"" + entry.getKey() + "\">" + entry.getValue() + "</Attachment>")
+                    .collect(Collectors.joining("\n\n"));
+            content = content + "\n\n" + String.format(Attachment_USER_MESSAGE_TEMPLATE, attachment);
         }
-
-        // 拼接 UserMessage 消息
-        String attachment = attachmentContents.entrySet().stream()
-                .map(entry -> "<Attachment name=\"" + entry.getKey() + "\">" + entry.getValue() + "</Attachment>")
-                .collect(Collectors.joining("\n\n"));
-        return new UserMessage(String.format(Attachment_USER_MESSAGE_TEMPLATE, attachment));
+        if (CollUtil.isEmpty(imageMedias)) {
+            if (CollUtil.isNotEmpty(attachmentUrls) && CollUtil.isEmpty(docContents)) {
+                // 有附件但全部失败：明确提示，避免模型空答
+                content = content + "\n\n(系统提示：附件图片未能加载，请检查文件地址是否可被服务端访问)";
+            }
+            return new UserMessage(content);
+        }
+        return UserMessage.builder()
+                .text(StrUtil.blankToDefault(content, "请根据图片回答用户问题。"))
+                .media(imageMedias)
+                .build();
     }
 
     private AiChatMessageDO createChatMessage(Long conversationId, Long replyId,

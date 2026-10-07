@@ -9,6 +9,8 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderD
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderImageStatusReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderListReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCopyRpaEnqueueReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRegenerateCopyReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 
@@ -29,6 +31,15 @@ public interface XqWorkOrderService {
     void attachVariants(List<cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRespVO> list);
 
     XqWorkOrderDO generateCopy(Long id, Long userId);
+
+    /** AI 重新生成：参考现有文案 + 用户提示词二次修改 */
+    XqWorkOrderDO regenerateCopy(@Valid XqWorkOrderRegenerateCopyReqVO reqVO, Long userId);
+
+    /**
+     * 按勾选入队文案 RPA：主体必跑；勾选变体各自入队；未勾选变体待主体成功后沿用主体文案。
+     * @return 实际入队条数
+     */
+    int enqueueCopyRpa(@Valid XqWorkOrderCopyRpaEnqueueReqVO reqVO, Long userId);
 
     /** 批量生成文案：领取为当前用户文案任务 */
     List<XqWorkOrderDO> batchGenerateCopy(@Valid XqWorkOrderBatchIdsReqVO reqVO, Long userId);

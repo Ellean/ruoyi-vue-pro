@@ -117,12 +117,23 @@ public class AiUtils {
                         .toolCallbacks(toolCallbacks).toolContext(toolContext).build();
             case OPENAI:
             case GROK: // 复用 OpenAI 客户端
+                // gpt-5 / o 系列多用 max_completion_tokens；继续传 max_tokens 会被部分中转 400
+                if (useMaxCompletionTokens(model)) {
+                    return OpenAiChatOptions.builder().model(model).temperature(temperature)
+                            .maxCompletionTokens(maxTokens)
+                            .toolCallbacks(toolCallbacks).toolContext(toolContext).build();
+                }
                 return OpenAiChatOptions.builder().model(model).temperature(temperature).maxTokens(maxTokens)
                         .toolCallbacks(toolCallbacks).toolContext(toolContext).build();
             case GEMINI:
                 return GoogleGenAiChatOptions.builder().model(model).temperature(temperature).maxOutputTokens(maxTokens)
                         .toolCallbacks(toolCallbacks).toolContext(toolContext).build();
             case AZURE_OPENAI:
+                if (useMaxCompletionTokens(model)) {
+                    return OpenAiChatOptions.builder().model(model).deploymentName(model).azure(true)
+                            .temperature(temperature).maxCompletionTokens(maxTokens)
+                            .toolCallbacks(toolCallbacks).toolContext(toolContext).build();
+                }
                 return OpenAiChatOptions.builder().model(model).deploymentName(model).azure(true)
                         .temperature(temperature).maxTokens(maxTokens)
                         .toolCallbacks(toolCallbacks).toolContext(toolContext).build();
@@ -135,6 +146,12 @@ public class AiUtils {
             default:
                 throw new IllegalArgumentException(StrUtil.format("未知平台({})", platform));
         }
+    }
+
+    /** gpt-5 / o 系列走 max_completion_tokens */
+    private static boolean useMaxCompletionTokens(String model) {
+        String m = StrUtil.blankToDefault(model, "").toLowerCase();
+        return m.startsWith("gpt-5") || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4");
     }
 
     public static Message buildMessage(String type, String content) {

@@ -31,6 +31,8 @@ public interface ErrorCodeConstants {
     // ========== API 聊天消息 1-040-004-000 ==========
     ErrorCode CHAT_MESSAGE_NOT_EXIST = new ErrorCode(1_040_004_000, "消息不存在!");
     ErrorCode CHAT_STREAM_ERROR = new ErrorCode(1_040_004_001, "对话生成异常!");
+    ErrorCode CHAT_MODEL_NO_VISION = new ErrorCode(1_040_004_002,
+            "当前模型({})不支持识图，请切换到 gpt-5.6-terra / gpt-5.4-mini / gpt-4o 等带视觉的模型后再上传图片");
 
     // ========== API 绘画 1-040-005-000 ==========
     ErrorCode IMAGE_NOT_EXISTS = new ErrorCode(1_040_005_000, "图片不存在!");

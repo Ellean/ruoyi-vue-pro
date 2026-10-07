@@ -7,10 +7,12 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqAssignable
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderAssignImageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBatchIdsReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCompleteReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCopyRpaEnqueueReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderDispatchReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderImageStatusReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderListReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRegenerateCopyReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyCallbackReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyPullReqVO;
@@ -98,6 +100,23 @@ public class XqWorkOrderController {
     @PreAuthorize("@ss.hasPermission('xq:work-order:gen-copy')")
     public CommonResult<XqWorkOrderRespVO> generateCopy(@RequestParam("id") Long id) {
         return success(BeanUtils.toBean(workOrderService.generateCopy(id, getLoginUserId()), XqWorkOrderRespVO.class));
+    }
+
+    @PostMapping("/regenerate-copy")
+    @Operation(summary = "AI 重新生成文案：参考现有文案与用户提示词二次修改")
+    @PreAuthorize("@ss.hasPermission('xq:work-order:gen-copy')")
+    public CommonResult<XqWorkOrderRespVO> regenerateCopy(
+            @Valid @RequestBody XqWorkOrderRegenerateCopyReqVO reqVO) {
+        return success(BeanUtils.toBean(
+                workOrderService.regenerateCopy(reqVO, getLoginUserId()), XqWorkOrderRespVO.class));
+    }
+
+    @PostMapping("/enqueue-copy-rpa")
+    @Operation(summary = "勾选变体入队文案 RPA（扁平拉取；未勾选变体沿用主体文案）")
+    @PreAuthorize("@ss.hasPermission('xq:work-order:gen-copy')")
+    public CommonResult<Integer> enqueueCopyRpa(
+            @Valid @RequestBody XqWorkOrderCopyRpaEnqueueReqVO reqVO) {
+        return success(workOrderService.enqueueCopyRpa(reqVO, getLoginUserId()));
     }
 
     @PostMapping("/batch-generate-copy")

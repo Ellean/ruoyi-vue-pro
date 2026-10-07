@@ -20,6 +20,7 @@ public interface AiApiKeyMapper extends BaseMapperX<AiApiKeyDO> {
         return selectPage(reqVO, new LambdaQueryWrapperX<AiApiKeyDO>()
                 .likeIfPresent(AiApiKeyDO::getName, reqVO.getName())
                 .eqIfPresent(AiApiKeyDO::getPlatform, reqVO.getPlatform())
+                .eqIfPresent(AiApiKeyDO::getGatewayType, reqVO.getGatewayType())
                 .eqIfPresent(AiApiKeyDO::getStatus, reqVO.getStatus())
                 .orderByDesc(AiApiKeyDO::getId));
     }

@@ -129,14 +129,19 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .orderByAsc(XqWorkOrderDO::getId));
     }
 
-    /** 当前登录人待跑文案：只拉主体（变体不跑文案）；仅 queued；默认 1 条 */
+    /**
+     * 当前登录人待跑文案：扁平清单（主体/变体无主次）。
+     * 含 queued；以及超过 1 分钟仍 stuck 在 running 的（识图/中途失败未回写时回收）。
+     */
     default List<XqWorkOrderDO> selectPendingCopyJobs(Long userId, int limit) {
-        int n = Math.max(1, Math.min(limit, 5));
+        int n = Math.max(1, Math.min(limit, 20));
+        java.time.LocalDateTime stuckBefore = java.time.LocalDateTime.now().minusMinutes(1);
         return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getStatus, 10)
-                .isNull(XqWorkOrderDO::getParentWorkOrderId)
                 .eq(XqWorkOrderDO::getCopyUserId, userId)
-                .eq(XqWorkOrderDO::getRpaCopyStatus, "queued")
+                .and(w -> w.eq(XqWorkOrderDO::getRpaCopyStatus, "queued")
+                        .or(w2 -> w2.eq(XqWorkOrderDO::getRpaCopyStatus, "running")
+                                .lt(XqWorkOrderDO::getUpdateTime, stuckBefore)))
                 .orderByAsc(XqWorkOrderDO::getId)
                 .last("LIMIT " + n));
     }
