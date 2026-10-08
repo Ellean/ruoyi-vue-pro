@@ -13,11 +13,13 @@ import cn.iocoder.yudao.module.ai.framework.ai.config.AiAutoConfiguration;
 import cn.iocoder.yudao.module.ai.framework.ai.config.YudaoAiProperties;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.baichuan.BaiChuanChatModel;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.doubao.DouBaoChatModel;
+import cn.iocoder.yudao.module.ai.framework.ai.core.model.grok.GrokChatModel;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.hunyuan.HunYuanChatModel;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.midjourney.api.MidjourneyApi;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.minimax.MiniMaxChatModel;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.moonshot.MoonshotChatModel;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.openai.CompatibleOpenAiImageModel;
+import cn.iocoder.yudao.module.ai.framework.ai.core.model.openai.OpenAiHttpClientCustomizers;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.siliconflow.SiliconFlowApiConstants;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.siliconflow.SiliconFlowChatModel;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.siliconflow.SiliconFlowImageApi;
@@ -68,6 +70,7 @@ import org.springframework.ai.ollama.OllamaEmbeddingModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.ai.ollama.api.OllamaEmbeddingOptions;
 import org.springframework.ai.openai.*;
+import org.springframework.ai.openai.setup.OpenAiSetup;
 import org.springframework.ai.retry.RetryUtils;
 import org.springframework.ai.stabilityai.StabilityAiImageModel;
 import org.springframework.ai.stabilityai.api.StabilityAiApi;
@@ -93,6 +96,8 @@ import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.JedisClientConfig;
 import redis.clients.jedis.RedisClient;
+
+import com.openai.client.OpenAIClient;
 
 import java.io.File;
 import java.time.Duration;
@@ -158,6 +163,14 @@ public class AiModelFactoryImpl implements AiModelFactory {
                     throw new IllegalArgumentException(StrUtil.format("未知平台({})", platform));
             }
         });
+    }
+
+    @Override
+    public void evictChatModel(AiPlatformEnum platform, String rawApiKey, String rawUrl) {
+        final String apiKey = resolveSpringPlaceholders(rawApiKey);
+        final String url = resolveSpringPlaceholders(rawUrl);
+        String cacheKey = buildClientCacheKey(ChatModel.class, platform, apiKey, url);
+        Singleton.remove(cacheKey);
     }
 
     @Override
@@ -434,16 +447,41 @@ public class AiModelFactoryImpl implements AiModelFactory {
      * 可参考 {@link OpenAiChatAutoConfiguration} 的 openAiChatModel 方法
      */
     private static OpenAiChatModel buildOpenAiChatModel(String openAiToken, String url) {
-        return OpenAiChatModel.builder()
-                .options(buildOpenAiChatOptions(openAiToken, url).build())
-                .build();
+        return buildOpenAiChatModel(buildOpenAiChatOptions(openAiToken, url).build());
     }
 
     private static OpenAiChatModel buildAzureOpenAiChatModel(String openAiToken, String url) {
+        return buildOpenAiChatModel(buildOpenAiChatOptions(openAiToken, url)
+                .azure(true)
+                .build());
+    }
+
+    /**
+     * 先按 Spring AI 默认建客户端，再把内部 OkHttp 换成 HTTP/1.1，避免中转站 HTTP/2 PROTOCOL_ERROR。
+     */
+    private static OpenAiChatModel buildOpenAiChatModel(OpenAiChatOptions options) {
+        Integer maxRetries = options.getMaxRetries();
+        OpenAIClient openAiClient = OpenAiHttpClientCustomizers.forceHttp11(
+                OpenAiSetup.setupSyncClient(
+                        options.getBaseUrl(),
+                        options.getApiKey(),
+                        options.getCredential(),
+                        options.getMicrosoftDeploymentName(),
+                        options.getMicrosoftFoundryServiceVersion(),
+                        options.getOrganizationId(),
+                        options.isMicrosoftFoundry(),
+                        options.isGitHubModels(),
+                        options.getModel(),
+                        options.getTimeout(),
+                        maxRetries != null ? maxRetries : 0,
+                        options.getProxy(),
+                        options.getCustomHeaders(),
+                        ObservationRegistry.NOOP,
+                        null,
+                        Collections.emptyList()));
         return OpenAiChatModel.builder()
-                .options(buildOpenAiChatOptions(openAiToken, url)
-                        .azure(true)
-                        .build())
+                .options(options)
+                .openAiClient(openAiClient)
                 .build();
     }
 
@@ -556,11 +594,13 @@ public class AiModelFactoryImpl implements AiModelFactory {
         return new StabilityAiImageModel(stabilityAiApi);
     }
 
-    private ChatModel buildGrokChatModel(String apiKey,String url) {
-        YudaoAiProperties.Grok properties = new YudaoAiProperties.Grok()
-                .setBaseUrl(url)
-                .setApiKey(apiKey);
-        return new AiAutoConfiguration().buildGrokChatClient(properties);
+    private ChatModel buildGrokChatModel(String apiKey, String url) {
+        // Grok 走 OpenAI 兼容协议；必须 force HTTP/1.1，否则中转易 PROTOCOL_ERROR
+        OpenAiChatModel openAi = buildOpenAiChatModel(
+                buildOpenAiChatOptions(apiKey, url)
+                        .model(GrokChatModel.MODEL_DEFAULT)
+                        .build());
+        return new GrokChatModel(openAi);
     }
 
     // ========== 各种创建 EmbeddingModel 的方法 ==========

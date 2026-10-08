@@ -134,6 +134,14 @@ public class AiModelServiceImpl implements AiModelService {
     }
 
     @Override
+    public void evictChatModel(Long id) {
+        AiModelDO model = validateModel(id);
+        AiApiKeyDO apiKey = apiKeyService.validateApiKey(model.getKeyId());
+        AiPlatformEnum platform = AiPlatformEnum.validatePlatform(apiKey.getPlatform());
+        modelFactory.evictChatModel(platform, apiKey.getApiKey(), apiKey.getUrl());
+    }
+
+    @Override
     public ImageModel getImageModel(Long id) {
         AiModelDO model = validateModel(id);
         AiApiKeyDO apiKey = apiKeyService.validateApiKey(model.getKeyId());

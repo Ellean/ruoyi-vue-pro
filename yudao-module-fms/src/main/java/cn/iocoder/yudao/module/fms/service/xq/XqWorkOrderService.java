@@ -11,6 +11,8 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderL
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCopyRpaEnqueueReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRegenerateCopyReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseCandidateRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseLookupReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 
@@ -27,6 +29,9 @@ public interface XqWorkOrderService {
     void updateWorkOrder(@Valid XqWorkOrderUpdateReqVO updateReqVO);
 
     List<XqWorkOrderDO> dispatchFromLibrary(@Valid XqWorkOrderDispatchReqVO reqVO, Long userId);
+
+    /** 下发前反查其它平台已完成的文案/图片，供用户选择复用 */
+    List<XqWorkOrderReuseCandidateRespVO> listReuseCandidates(@Valid XqWorkOrderReuseLookupReqVO reqVO);
 
     void attachVariants(List<cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRespVO> list);
 
@@ -55,6 +60,9 @@ public interface XqWorkOrderService {
     void updateImageStatus(@Valid XqWorkOrderImageStatusReqVO reqVO);
 
     Long listWorkOrder(@Valid XqWorkOrderListReqVO reqVO);
+
+    /** 导表上架：用户确认已上架 */
+    Long confirmListing(Long id);
 
     Long completeWorkOrder(@Valid XqWorkOrderCompleteReqVO completeReqVO);
 

@@ -22,7 +22,7 @@ public class XqCategoryFieldConfigSaveReqVO {
         private String code;
         private String defaultValue;
         private String valueSource;
-        /** copy=描述 product=产品 attr=属性 */
+        /** copy=产品文案 product=产品基本信息 attr=产品规格 other=其他属性 */
         private String zone;
     }
 

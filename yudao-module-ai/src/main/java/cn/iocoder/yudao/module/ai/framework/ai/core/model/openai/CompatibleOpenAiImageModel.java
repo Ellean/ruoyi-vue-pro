@@ -52,6 +52,7 @@ public class CompatibleOpenAiImageModel implements ImageModel {
                 ObservationRegistry.NOOP,
                 null,
                 Collections.emptyList());
+        OpenAiHttpClientCustomizers.forceHttp11(this.openAiClient);
     }
 
     @Override

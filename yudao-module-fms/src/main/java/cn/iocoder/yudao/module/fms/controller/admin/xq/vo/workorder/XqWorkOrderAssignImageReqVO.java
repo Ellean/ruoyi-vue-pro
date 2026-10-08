@@ -22,4 +22,7 @@ public class XqWorkOrderAssignImageReqVO {
 
     @Schema(description = "上架店铺（可选）")
     private String listingShopId;
+
+    @Schema(description = "是否自动扩展为整家族（主体+全部变体）。任务列表外部分配默认 true；编辑页勾选分配传 false")
+    private Boolean expandFamily;
 }

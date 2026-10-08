@@ -37,6 +37,8 @@ public class XqWorkOrderRespVO {
     private Long copyUserId;
     private Long imageUserId;
     private String imageStatus;
+    /** 上架子状态：export_pending_confirm / listed */
+    private String listingStatus;
     private String listingValuesJson;
     private String listingResultJson;
     private String listingPlatformId;

@@ -1038,7 +1038,8 @@ public class XqListingCatalogService {
             return "";
         }
         String lower = zone.toLowerCase();
-        if ("copy".equals(lower) || "product".equals(lower) || "attr".equals(lower)) {
+        if ("copy".equals(lower) || "product".equals(lower)
+                || "attr".equals(lower) || "other".equals(lower)) {
             return lower;
         }
         if (lower.startsWith("u_") && lower.matches("u_[a-z0-9_]{1,40}")) {
@@ -1069,7 +1070,7 @@ public class XqListingCatalogService {
                 && !hay.matches(".*(font size|file size|battery|screen).*")) {
             return "attr";
         }
-        return "";
+        return "other";
     }
 
     private static XqCategoryFieldConfigRespVO toFieldConfigVo(

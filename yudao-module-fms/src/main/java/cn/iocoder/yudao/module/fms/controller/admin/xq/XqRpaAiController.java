@@ -40,7 +40,7 @@ public class XqRpaAiController {
     }
 
     @PostMapping("/vision-profile")
-    @Operation(summary = "RPA：下发对话模型地址，供本机下载原图后识图")
+    @Operation(summary = "RPA：下发全部可识图 Chat API（profiles），供本机一图一聊轮询")
     public CommonResult<Map<String, Object>> visionProfile(@RequestBody XqRpaAiClassifyImagesReqVO reqVO) {
         return success(rpaAiService.getVisionProfile(reqVO == null ? null : reqVO.getCallbackToken()));
     }

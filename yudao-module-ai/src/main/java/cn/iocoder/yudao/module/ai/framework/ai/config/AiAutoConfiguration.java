@@ -426,15 +426,39 @@ public class AiAutoConfiguration {
         if (StrUtil.isEmpty(properties.getModel())) {
             properties.setModel(GrokChatModel.MODEL_DEFAULT);
         }
+        // 与 AiModelFactoryImpl 一致：强制 HTTP/1.1，避免中转站 PROTOCOL_ERROR
+        OpenAiChatOptions options = OpenAiChatOptions.builder()
+                .baseUrl(StrUtil.blankToDefault(properties.getBaseUrl(), GrokChatModel.BASE_URL))
+                .apiKey(properties.getApiKey())
+                .model(properties.getModel())
+                .temperature(properties.getTemperature())
+                .maxTokens(properties.getMaxTokens())
+                .topP(properties.getTopP())
+                .timeout(java.time.Duration.ofMinutes(10))
+                .build();
+        Integer maxRetries = options.getMaxRetries();
+        com.openai.client.OpenAIClient openAiClient =
+                cn.iocoder.yudao.module.ai.framework.ai.core.model.openai.OpenAiHttpClientCustomizers.forceHttp11(
+                        org.springframework.ai.openai.setup.OpenAiSetup.setupSyncClient(
+                                options.getBaseUrl(),
+                                options.getApiKey(),
+                                options.getCredential(),
+                                options.getMicrosoftDeploymentName(),
+                                options.getMicrosoftFoundryServiceVersion(),
+                                options.getOrganizationId(),
+                                options.isMicrosoftFoundry(),
+                                options.isGitHubModels(),
+                                options.getModel(),
+                                options.getTimeout(),
+                                maxRetries != null ? maxRetries : 0,
+                                options.getProxy(),
+                                options.getCustomHeaders(),
+                                io.micrometer.observation.ObservationRegistry.NOOP,
+                                null,
+                                java.util.Collections.emptyList()));
         OpenAiChatModel openAiChatModel = OpenAiChatModel.builder()
-                .options(OpenAiChatOptions.builder()
-                        .baseUrl(StrUtil.blankToDefault(properties.getBaseUrl(), GrokChatModel.BASE_URL))
-                        .apiKey(properties.getApiKey())
-                        .model(properties.getModel())
-                        .temperature(properties.getTemperature())
-                        .maxTokens(properties.getMaxTokens())
-                        .topP(properties.getTopP())
-                        .build())
+                .options(options)
+                .openAiClient(openAiClient)
                 .build();
         return new GrokChatModel(openAiChatModel);
     }

@@ -52,12 +52,18 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
         }
         if (reqVO.getMineImageUserId() != null) {
             Long uid = reqVO.getMineImageUserId();
-            wrapper.isNotNull(XqWorkOrderDO::getImageUserId)
-                    .and(w -> w.eq(XqWorkOrderDO::getImageUserId, uid)
-                            .or()
-                            .eq(XqWorkOrderDO::getCopyUserId, uid)
-                            .or()
-                            .eq(XqWorkOrderDO::getAssigneeUserId, uid));
+            // 父单自身分给美工，或任一变体分给美工，都要能在图片池看到该家族
+            List<Long> parentIdsByChildImage = selectParentIdsByImageUserId(uid);
+            wrapper.and(w -> {
+                w.eq(XqWorkOrderDO::getImageUserId, uid)
+                        .or()
+                        .eq(XqWorkOrderDO::getCopyUserId, uid)
+                        .or()
+                        .eq(XqWorkOrderDO::getAssigneeUserId, uid);
+                if (cn.hutool.core.collection.CollUtil.isNotEmpty(parentIdsByChildImage)) {
+                    w.or().in(XqWorkOrderDO::getId, parentIdsByChildImage);
+                }
+            });
         }
         if (Boolean.TRUE.equals(reqVO.getListingReady())) {
             wrapper.in(XqWorkOrderDO::getImageStatus, "done", "generated", "revised");
@@ -89,11 +95,35 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
             return;
         }
         switch (flowStatus) {
-            case "submitted" -> wrapper.eq(XqWorkOrderDO::getStatus, 20);
+            case "listed", "submitted" -> wrapper.eq(XqWorkOrderDO::getStatus, 20);
             case "closed" -> wrapper.eq(XqWorkOrderDO::getStatus, 30);
-            case "review" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+            case "copy_pending" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+                    .and(w -> w.isNull(XqWorkOrderDO::getContentTitle)
+                            .or()
+                            .eq(XqWorkOrderDO::getContentTitle, ""))
+                    .and(w -> w.isNull(XqWorkOrderDO::getRpaCopyStatus)
+                            .or()
+                            .notIn(XqWorkOrderDO::getRpaCopyStatus, "running", "queued"));
+            case "copy_running", "writing" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+                    .in(XqWorkOrderDO::getRpaCopyStatus, "running", "queued");
+            case "assign_image", "review" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
                     .isNotNull(XqWorkOrderDO::getContentTitle)
-                    .ne(XqWorkOrderDO::getContentTitle, "");
+                    .ne(XqWorkOrderDO::getContentTitle, "")
+                    .isNull(XqWorkOrderDO::getImageUserId);
+            case "image_pending" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+                    .isNotNull(XqWorkOrderDO::getImageUserId)
+                    .and(w -> w.isNull(XqWorkOrderDO::getImageStatus)
+                            .or()
+                            .in(XqWorkOrderDO::getImageStatus, "todo", "pending"));
+            case "image_running" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+                    .isNotNull(XqWorkOrderDO::getImageUserId)
+                    .in(XqWorkOrderDO::getImageStatus, "running", "generated", "revised", "rejected");
+            case "list_pending" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+                    .and(w -> w.in(XqWorkOrderDO::getImageStatus, "done", "generated", "revised")
+                            .or()
+                            .eq(XqWorkOrderDO::getListingStatus, "export_pending_confirm")
+                            .or()
+                            .eq(XqWorkOrderDO::getWorkflowPhase, "list"));
             case "assign" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
                     .isNull(XqWorkOrderDO::getCopyUserId)
                     .and(w -> w.isNull(XqWorkOrderDO::getContentTitle)
@@ -102,13 +132,6 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                     .and(w -> w.isNull(XqWorkOrderDO::getRpaCopyStatus)
                             .or()
                             .notIn(XqWorkOrderDO::getRpaCopyStatus, "running", "queued"));
-            case "writing" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
-                    .and(w -> w.isNull(XqWorkOrderDO::getContentTitle)
-                            .or()
-                            .eq(XqWorkOrderDO::getContentTitle, ""))
-                    .and(w -> w.isNotNull(XqWorkOrderDO::getCopyUserId)
-                            .or()
-                            .in(XqWorkOrderDO::getRpaCopyStatus, "running", "queued"));
             default -> {
             }
         }
@@ -119,6 +142,11 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
             + "AND (external_sku LIKE CONCAT('%', #{kw}, '%') "
             + "OR title LIKE CONCAT('%', #{kw}, '%') OR no LIKE CONCAT('%', #{kw}, '%'))")
     List<Long> selectParentIdsByChildKeyword(@Param("kw") String kw);
+
+    @Select("SELECT DISTINCT parent_work_order_id FROM xq_work_order "
+            + "WHERE deleted = 0 AND parent_work_order_id IS NOT NULL "
+            + "AND image_user_id = #{uid}")
+    List<Long> selectParentIdsByImageUserId(@Param("uid") Long uid);
 
     default List<XqWorkOrderDO> selectByParentIds(Collection<Long> parentIds) {
         if (parentIds == null || parentIds.isEmpty()) {
@@ -174,6 +202,27 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eq(XqWorkOrderDO::getListingPlatformId, listingPlatformId)
                 .in(XqWorkOrderDO::getStatus, 10, 20)
                 .last("LIMIT 1"));
+    }
+
+    /**
+     * 下发前反查：同 SKU 在其它平台已有文案或图片的任务
+     */
+    default List<XqWorkOrderDO> selectReusableBySkus(Collection<String> skus) {
+        if (skus == null || skus.isEmpty()) {
+            return List.of();
+        }
+        return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .in(XqWorkOrderDO::getExternalSku, skus)
+                .in(XqWorkOrderDO::getStatus, 10, 20)
+                .and(w -> w
+                        .and(c -> c.isNotNull(XqWorkOrderDO::getContentTitle)
+                                .ne(XqWorkOrderDO::getContentTitle, ""))
+                        .or(i -> i.isNotNull(XqWorkOrderDO::getGeneratedImageUrl)
+                                .ne(XqWorkOrderDO::getGeneratedImageUrl, ""))
+                        .or(p -> p.isNotNull(XqWorkOrderDO::getImagePromptJson)
+                                .ne(XqWorkOrderDO::getImagePromptJson, "")
+                                .ne(XqWorkOrderDO::getImagePromptJson, "[]")))
+                .orderByDesc(XqWorkOrderDO::getId));
     }
 
     /**

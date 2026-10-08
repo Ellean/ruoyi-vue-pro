@@ -14,6 +14,8 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderL
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRegenerateCopyReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseCandidateRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseLookupReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyCallbackReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyPullReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyPullRespVO;
@@ -84,6 +86,14 @@ public class XqWorkOrderController {
             @Valid @RequestBody XqWorkOrderDispatchReqVO reqVO) {
         List<XqWorkOrderDO> list = workOrderService.dispatchFromLibrary(reqVO, getLoginUserId());
         return success(BeanUtils.toBean(list, XqWorkOrderRespVO.class));
+    }
+
+    @PostMapping("/reuse-candidates")
+    @Operation(summary = "下发前反查其它平台可复用文案/图片")
+    @PreAuthorize("@ss.hasPermission('xq:product:dispatch')")
+    public CommonResult<List<XqWorkOrderReuseCandidateRespVO>> listReuseCandidates(
+            @Valid @RequestBody XqWorkOrderReuseLookupReqVO reqVO) {
+        return success(workOrderService.listReuseCandidates(reqVO));
     }
 
     @PutMapping("/update")
@@ -184,10 +194,18 @@ public class XqWorkOrderController {
     }
 
     @PostMapping("/list")
-    @Operation(summary = "提交上架（模板字段 + 入库）")
+    @Operation(summary = "提交上架（api=程序判定成功；export=导表待确认）")
     @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:list', 'xq:work-order:complete')")
     public CommonResult<Long> listWorkOrder(@Valid @RequestBody XqWorkOrderListReqVO reqVO) {
         return success(workOrderService.listWorkOrder(reqVO));
+    }
+
+    @PostMapping("/confirm-listing")
+    @Operation(summary = "导表上架：用户确认已上架")
+    @Parameter(name = "id", description = "任务编号", required = true)
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:list', 'xq:work-order:complete')")
+    public CommonResult<Long> confirmListing(@RequestParam("id") Long id) {
+        return success(workOrderService.confirmListing(id));
     }
 
     @PostMapping("/generate-image")

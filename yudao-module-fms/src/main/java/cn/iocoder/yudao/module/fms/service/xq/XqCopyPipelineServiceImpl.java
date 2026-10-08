@@ -146,10 +146,10 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         // 流水线步骤说明（给 RPA / 大模型 system 用）
         input.put("steps", List.of(
                 "1.load_copy_rule: 先加载文案规则作为硬约束（字数/卖点数/标点/平台规范）",
-                "2.download_images: RPA 必须先把 sourceImages 下到本机 Main Images",
-                "3.vision_observe: 本机识图，产出 imageObservations，禁止空写",
-                "4.generate_copy: 按实拍观察+原文案写标题/卖点/中文风格标签/长描述",
-                "5.classify_and_prompt: 按实拍分型，中文提示词，每条带 imageUrl 参考图"
+                "2.download_images: RPA 必须把 sourceImages 全部下到本机 Main Images（与首图识图无关）",
+                "3.vision_observe: 本机只识首图 → imageObservations（不做全套识图）",
+                "4.generate_copy: 按首图观察+原文案写标题/卖点/中文风格标签/长描述",
+                "5.image_prompts_local: 提示词用文案本地拼，全套识图留给生图机器人"
         ));
 
         String base = StrUtil.removeSuffix(StrUtil.blankToDefault(callbackBaseUrl, ""), "/");
@@ -396,7 +396,14 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                 done.set(XqWorkOrderDO::getCoverUrl, promptUrls.get(0));
             }
         }
-        workOrderMapper.update(null, done);
+        int updated = workOrderMapper.update(null, done);
+        if (updated <= 0) {
+            log.warn("[rpa-copy-callback] 更新 0 行 workOrderId={} status={}",
+                    order.getId(), order.getRpaCopyStatus());
+            throw exception(XQ_RPA_TRIGGER_FAIL, "回调落库失败：工单未更新 id=" + order.getId());
+        }
+        log.info("[rpa-copy-callback] ok workOrderId={} sku={} titleLen={}",
+                order.getId(), order.getExternalSku(), StrUtil.length(title));
 
         // 主体成功后：未勾选独立 RPA 的变体沿用主体文案
         if (order.getParentWorkOrderId() == null) {
@@ -431,42 +438,84 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         }
     }
 
-    /** 下发后补齐原文案/原图；生成前再兜底一次 */
+    /** 下发后补齐原文案/原图；生成前再兜底一次。原图若只有封面也会用 Giga/父单/家族全量图补齐。 */
     public void enrichSourceIfNeeded(XqWorkOrderDO order) {
         if (order == null || order.getId() == null) {
             return;
         }
         boolean needDesc = StrUtil.isBlank(order.getSourceDescription());
-        boolean needImages = StrUtil.isBlank(order.getSourceImageUrls());
-        if (!needDesc && !needImages) {
+        List<String> currentImages = parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl());
+        XqGigaProductRow row = self.readGigaProduct(order.getGigaProductId(), order.getExternalSku());
+
+        // 候选全量图：本 SKU Giga → 父工单 → 家族主 SKU Giga（变体常只有封面）
+        LinkedHashSet<String> candidate = new LinkedHashSet<>();
+        if (row != null) {
+            candidate.addAll(parseImageUrls(row.getImageUrlsJson(), row.getImageUrl()));
+        }
+        if (order.getParentWorkOrderId() != null) {
+            XqWorkOrderDO parent = workOrderMapper.selectById(order.getParentWorkOrderId());
+            if (parent != null) {
+                candidate.addAll(parseImageUrls(parent.getSourceImageUrls(), parent.getCoverUrl()));
+                if (candidate.size() <= 1) {
+                    XqGigaProductRow parentGiga = self.readGigaProduct(
+                            parent.getGigaProductId(), parent.getExternalSku());
+                    if (parentGiga != null) {
+                        candidate.addAll(parseImageUrls(
+                                parentGiga.getImageUrlsJson(), parentGiga.getImageUrl()));
+                    }
+                }
+            }
+        }
+        if (candidate.size() <= 1 && row != null && StrUtil.isNotBlank(row.getFamilySku())
+                && !StrUtil.equalsIgnoreCase(row.getFamilySku(), order.getExternalSku())) {
+            XqGigaProductRow family = self.readGigaProduct(null, row.getFamilySku());
+            if (family != null) {
+                candidate.addAll(parseImageUrls(family.getImageUrlsJson(), family.getImageUrl()));
+            }
+        }
+        if (candidate.size() <= 1 && StrUtil.isNotBlank(order.getParentSku())
+                && !StrUtil.equalsIgnoreCase(order.getParentSku(), order.getExternalSku())) {
+            XqGigaProductRow parentSkuGiga = self.readGigaProduct(null, order.getParentSku());
+            if (parentSkuGiga != null) {
+                candidate.addAll(parseImageUrls(
+                        parentSkuGiga.getImageUrlsJson(), parentSkuGiga.getImageUrl()));
+            }
+        }
+
+        List<String> gigaImages = new ArrayList<>(candidate);
+        boolean needImages = currentImages.isEmpty()
+                || (!gigaImages.isEmpty() && gigaImages.size() > currentImages.size());
+        if (row == null && !needDesc && !needImages) {
             return;
         }
-        XqGigaProductRow row = self.readGigaProduct(order.getGigaProductId(), order.getExternalSku());
-        if (row == null) {
+        if (!needDesc && !needImages
+                && (row == null || !(StrUtil.isBlank(order.getGigaProductId())
+                && StrUtil.isNotBlank(row.getId())))) {
             return;
         }
         LambdaUpdateWrapper<XqWorkOrderDO> uw = new LambdaUpdateWrapper<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getId, order.getId());
         boolean changed = false;
-        if (needDesc && StrUtil.isNotBlank(row.getDescription())) {
+        if (needDesc && row != null && StrUtil.isNotBlank(row.getDescription())) {
             uw.set(XqWorkOrderDO::getSourceDescription, row.getDescription());
             order.setSourceDescription(row.getDescription());
             changed = true;
         }
-        if (needImages) {
-            List<String> urls = parseImageUrls(row.getImageUrlsJson(), row.getImageUrl());
-            if (!urls.isEmpty()) {
-                String json = JSONUtil.toJsonStr(urls);
-                uw.set(XqWorkOrderDO::getSourceImageUrls, json);
-                order.setSourceImageUrls(json);
-                if (StrUtil.isBlank(order.getCoverUrl())) {
-                    uw.set(XqWorkOrderDO::getCoverUrl, urls.get(0));
-                    order.setCoverUrl(urls.get(0));
-                }
-                changed = true;
+        if (needImages && !gigaImages.isEmpty()) {
+            // 合并：以候选全量为主，再保留工单已有 URL
+            LinkedHashSet<String> merged = new LinkedHashSet<>(gigaImages);
+            merged.addAll(currentImages);
+            List<String> urls = new ArrayList<>(merged);
+            String json = JSONUtil.toJsonStr(urls);
+            uw.set(XqWorkOrderDO::getSourceImageUrls, json);
+            order.setSourceImageUrls(json);
+            if (StrUtil.isBlank(order.getCoverUrl())) {
+                uw.set(XqWorkOrderDO::getCoverUrl, urls.get(0));
+                order.setCoverUrl(urls.get(0));
             }
+            changed = true;
         }
-        if (StrUtil.isBlank(order.getGigaProductId()) && StrUtil.isNotBlank(row.getId())) {
+        if (row != null && StrUtil.isBlank(order.getGigaProductId()) && StrUtil.isNotBlank(row.getId())) {
             uw.set(XqWorkOrderDO::getGigaProductId, row.getId());
             order.setGigaProductId(row.getId());
             changed = true;

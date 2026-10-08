@@ -15,7 +15,10 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderL
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCopyRpaEnqueueReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRegenerateCopyReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseCandidateRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseLookupReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
+import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqProductDO;
@@ -222,7 +225,8 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
                 parentId = parentIdBySku.get(item.parentSku);
             }
             XqWorkOrderDO order = insertDispatchedOrder(reqVO, userId, item, parentId);
-            created.add(order);
+            applyReuseAfterInsert(order, item.sku, reqVO, userId);
+            created.add(workOrderMapper.selectById(order.getId()));
             if (item.parentSku == null) {
                 parentIdBySku.put(item.sku, order.getId());
             }
@@ -231,6 +235,183 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             throw exception(XQ_DISPATCH_EMPTY);
         }
         return created;
+    }
+
+    @Override
+    public List<XqWorkOrderReuseCandidateRespVO> listReuseCandidates(XqWorkOrderReuseLookupReqVO reqVO) {
+        List<String> skus = CollUtil.emptyIfNull(reqVO.getSkus()).stream()
+                .map(StrUtil::trim)
+                .filter(StrUtil::isNotBlank)
+                .distinct()
+                .toList();
+        if (skus.isEmpty()) {
+            return List.of();
+        }
+        Set<String> excludePlatforms = new LinkedHashSet<>();
+        for (String pid : CollUtil.emptyIfNull(reqVO.getExcludePlatformIds())) {
+            if (StrUtil.isNotBlank(pid)) {
+                excludePlatforms.add(pid.trim());
+            }
+        }
+        List<XqWorkOrderDO> rows = workOrderMapper.selectReusableBySkus(skus);
+        Map<String, XqWorkOrderReuseCandidateRespVO> bySku = new LinkedHashMap<>();
+        for (String sku : skus) {
+            XqWorkOrderReuseCandidateRespVO group = new XqWorkOrderReuseCandidateRespVO();
+            group.setSku(sku);
+            bySku.put(sku, group);
+        }
+        for (XqWorkOrderDO row : rows) {
+            if (row == null || StrUtil.isBlank(row.getExternalSku())) {
+                continue;
+            }
+            if (excludePlatforms.contains(StrUtil.blankToDefault(row.getListingPlatformId(), ""))) {
+                continue;
+            }
+            XqWorkOrderReuseCandidateRespVO group = bySku.get(row.getExternalSku());
+            if (group == null) {
+                continue;
+            }
+            List<String> imageUrls = extractGeneratedImageUrls(row);
+            boolean hasCopy = StrUtil.isNotBlank(row.getContentTitle());
+            boolean hasImage = !imageUrls.isEmpty();
+            if (!hasCopy && !hasImage) {
+                continue;
+            }
+            XqWorkOrderReuseCandidateRespVO.Candidate c = new XqWorkOrderReuseCandidateRespVO.Candidate();
+            c.setWorkOrderId(row.getId());
+            c.setNo(row.getNo());
+            c.setListingPlatformId(row.getListingPlatformId());
+            c.setListingPlatformName(row.getListingPlatformName());
+            c.setListingShopName(row.getListingShopName());
+            c.setStatus(row.getStatus());
+            c.setWorkflowPhase(row.getWorkflowPhase());
+            c.setImageStatus(row.getImageStatus());
+            c.setHasCopy(hasCopy);
+            c.setHasImage(hasImage);
+            c.setContentTitle(row.getContentTitle());
+            c.setContentSellingPoints(row.getContentSellingPoints());
+            c.setDescription(extractCopyDescription(row.getCopyResultJson()));
+            c.setCoverUrl(row.getCoverUrl());
+            c.setImageUrls(imageUrls);
+            group.getCandidates().add(c);
+        }
+        return bySku.values().stream()
+                .filter(g -> CollUtil.isNotEmpty(g.getCandidates()))
+                .toList();
+    }
+
+    /** 下发后按用户勾选复用其它平台文案/图片 */
+    private void applyReuseAfterInsert(XqWorkOrderDO order, String sku,
+                                       XqWorkOrderDispatchReqVO reqVO, Long userId) {
+        if (order == null || order.getId() == null || StrUtil.isBlank(sku) || reqVO == null) {
+            return;
+        }
+        Long copyFromId = reqVO.getReuseCopyFromIds() == null ? null : reqVO.getReuseCopyFromIds().get(sku);
+        Long imageFromId = reqVO.getReuseImageFromIds() == null ? null : reqVO.getReuseImageFromIds().get(sku);
+        if (copyFromId == null && imageFromId == null) {
+            return;
+        }
+        XqWorkOrderDO copySrc = copyFromId == null ? null : workOrderMapper.selectById(copyFromId);
+        XqWorkOrderDO imageSrc = imageFromId == null ? null
+                : (Objects.equals(imageFromId, copyFromId) ? copySrc : workOrderMapper.selectById(imageFromId));
+        if (copySrc != null && !StrUtil.equals(sku, copySrc.getExternalSku())) {
+            copySrc = null;
+        }
+        if (imageSrc != null && !StrUtil.equals(sku, imageSrc.getExternalSku())) {
+            imageSrc = null;
+        }
+        if (copySrc == null && imageSrc == null) {
+            return;
+        }
+        var uw = new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getId, order.getId());
+        boolean hasCopy = false;
+        boolean hasImage = false;
+        if (copySrc != null && StrUtil.isNotBlank(copySrc.getContentTitle())) {
+            hasCopy = true;
+            uw.set(XqWorkOrderDO::getContentTitle, copySrc.getContentTitle())
+                    .set(XqWorkOrderDO::getContentSellingPoints, copySrc.getContentSellingPoints())
+                    .set(XqWorkOrderDO::getCopyResultJson, copySrc.getCopyResultJson())
+                    .set(XqWorkOrderDO::getCopyUserId, userId)
+                    .set(XqWorkOrderDO::getRpaCopyStatus, "inherited")
+                    .set(XqWorkOrderDO::getRpaCopyError, null)
+                    .set(XqWorkOrderDO::getRpaCopyWorkUuid, null);
+        }
+        if (imageSrc != null) {
+            List<String> urls = extractGeneratedImageUrls(imageSrc);
+            if (!urls.isEmpty() || StrUtil.isNotBlank(imageSrc.getImagePromptJson())) {
+                hasImage = true;
+                uw.set(XqWorkOrderDO::getGeneratedImageUrl,
+                                StrUtil.blankToDefault(imageSrc.getGeneratedImageUrl(), urls.isEmpty() ? null : urls.get(0)))
+                        .set(XqWorkOrderDO::getImagePromptJson, imageSrc.getImagePromptJson())
+                        .set(XqWorkOrderDO::getImageStatus,
+                                StrUtil.blankToDefault(imageSrc.getImageStatus(), "done"))
+                        .set(XqWorkOrderDO::getImageUserId, userId);
+            }
+        }
+        if (!hasCopy && !hasImage) {
+            return;
+        }
+        if (hasCopy && hasImage) {
+            uw.set(XqWorkOrderDO::getWorkflowPhase, "list");
+        } else if (hasCopy) {
+            uw.set(XqWorkOrderDO::getWorkflowPhase, "image");
+        }
+        workOrderMapper.update(null, uw);
+    }
+
+    private static String extractCopyDescription(String copyResultJson) {
+        if (StrUtil.isBlank(copyResultJson)) {
+            return "";
+        }
+        try {
+            JSONObject obj = JSONUtil.parseObj(copyResultJson);
+            return StrUtil.blankToDefault(obj.getStr("description"), "");
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static List<String> extractGeneratedImageUrls(XqWorkOrderDO row) {
+        LinkedHashSet<String> urls = new LinkedHashSet<>();
+        if (row == null) {
+            return new ArrayList<>();
+        }
+        if (StrUtil.isNotBlank(row.getImagePromptJson()) && !"null".equalsIgnoreCase(row.getImagePromptJson())) {
+            try {
+                JSONArray arr = JSONUtil.parseArray(row.getImagePromptJson());
+                for (Object o : arr) {
+                    if (!(o instanceof JSONObject jo)) {
+                        continue;
+                    }
+                    String u = StrUtil.blankToDefault(jo.getStr("resultUrl"),
+                            StrUtil.blankToDefault(jo.getStr("generatedImageUrl"), jo.getStr("url")));
+                    if (StrUtil.isNotBlank(u) && (u.startsWith("http://") || u.startsWith("https://"))) {
+                        urls.add(u.trim());
+                    }
+                }
+            } catch (Exception ignored) {
+                // ignore
+            }
+        }
+        String gen = StrUtil.trim(row.getGeneratedImageUrl());
+        if (StrUtil.isNotBlank(gen)) {
+            if (gen.startsWith("[")) {
+                try {
+                    for (Object o : JSONUtil.parseArray(gen)) {
+                        String u = StrUtil.trim(String.valueOf(o));
+                        if (StrUtil.isNotBlank(u) && (u.startsWith("http://") || u.startsWith("https://"))) {
+                            urls.add(u);
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // ignore
+                }
+            } else if (gen.startsWith("http://") || gen.startsWith("https://")) {
+                urls.add(gen);
+            }
+        }
+        return new ArrayList<>(urls);
     }
 
     @Override
@@ -665,6 +846,13 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (!isCopyReady(order)) {
             throw exception(XQ_WORK_ORDER_COPY_REQUIRED);
         }
+        // 进入图片执行中
+        XqWorkOrderDO running = new XqWorkOrderDO();
+        running.setId(order.getId());
+        running.setImageStatus("running");
+        running.setWorkflowPhase("image");
+        workOrderMapper.updateById(running);
+
         String image = StrUtil.blankToDefault(order.getCoverUrl(), "");
         if (StrUtil.isBlank(image)) {
             image = "https://via.placeholder.com/800x800.png?text=" + order.getExternalSku();
@@ -673,7 +861,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         update.setId(order.getId());
         update.setGeneratedImageUrl(image);
         update.setImageStatus("generated");
-        update.setWorkflowPhase("list");
+        update.setWorkflowPhase("image");
         workOrderMapper.updateById(update);
         return workOrderMapper.selectById(id);
     }
@@ -736,16 +924,25 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             throw exception(XQ_DISPATCH_EMPTY);
         }
         validateAssignableImageUser(reqVO.getImageUserId(), operatorUserId);
+        // 外侧默认整家族；编辑页勾选分配传 expandFamily=false
+        boolean expand = reqVO.getExpandFamily() == null || Boolean.TRUE.equals(reqVO.getExpandFamily());
+        LinkedHashSet<Long> expandIds = expand
+                ? expandAssignImageFamilyIds(reqVO.getIds())
+                : new LinkedHashSet<>(reqVO.getIds().stream().filter(Objects::nonNull).toList());
+        Map<Long, XqWorkOrderDO> cache = new LinkedHashMap<>();
         int count = 0;
-        for (Long id : reqVO.getIds()) {
+        for (Long id : expandIds) {
             XqWorkOrderDO order = validateDoing(id);
-            if (!isCopyReady(order)) {
-                throw exception(XQ_WORK_ORDER_COPY_REQUIRED);
+            cache.put(id, order);
+            // 变体无独立文案时从主体沿用；纯分组父级无文案则跳过
+            if (!ensureCopyReadyForAssign(order, cache)) {
+                continue;
             }
-            // 仅本人领取的文案可分配（超管/本人 copyUser 为空时允许操作人）
-            if (order.getCopyUserId() != null
-                    && operatorUserId != null
-                    && !order.getCopyUserId().equals(operatorUserId)) {
+            if (!canOperatorAssignImage(order, cache, operatorUserId)) {
+                continue;
+            }
+            // 美工已开跑（执行中/已出图）不可再改派
+            if (order.getImageUserId() != null && isImageExecutionStarted(order)) {
                 continue;
             }
             XqWorkOrderDO update = new XqWorkOrderDO();
@@ -753,6 +950,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             update.setImageUserId(reqVO.getImageUserId());
             boolean hasPrompt = StrUtil.isNotBlank(order.getImagePromptJson())
                     && !"[]".equals(order.getImagePromptJson().trim());
+            // 改派时保持未执行状态，不把 running 重置掉（上面已跳过已开跑）
             update.setImageStatus(hasPrompt ? "pending" : "todo");
             update.setWorkflowPhase("image");
             if (StrUtil.isNotBlank(reqVO.getListingPlatformId())) {
@@ -767,7 +965,124 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             workOrderMapper.updateById(update);
             count++;
         }
+        if (count == 0) {
+            throw exception(XQ_WORK_ORDER_COPY_REQUIRED);
+        }
         return count;
+    }
+
+    /** 将请求 id 扩展为「主体 + 全部变体」 */
+    private LinkedHashSet<Long> expandAssignImageFamilyIds(List<Long> ids) {
+        LinkedHashSet<Long> out = new LinkedHashSet<>();
+        LinkedHashSet<Long> rootIds = new LinkedHashSet<>();
+        for (Long id : ids) {
+            if (id == null) {
+                continue;
+            }
+            XqWorkOrderDO order = workOrderMapper.selectById(id);
+            if (order == null) {
+                continue;
+            }
+            Long rootId = order.getParentWorkOrderId() != null
+                    ? order.getParentWorkOrderId() : order.getId();
+            rootIds.add(rootId);
+            out.add(rootId);
+            out.add(order.getId());
+        }
+        if (!rootIds.isEmpty()) {
+            List<XqWorkOrderDO> children = workOrderMapper.selectByParentIds(rootIds);
+            for (XqWorkOrderDO child : children) {
+                if (child != null && child.getId() != null) {
+                    out.add(child.getId());
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 变体缺文案时从主体或已有文案的兄弟变体沿用。
+     * @return false 表示无法分配（如纯分组父级自身无文案），调用方跳过
+     */
+    private boolean ensureCopyReadyForAssign(XqWorkOrderDO order, Map<Long, XqWorkOrderDO> cache) {
+        if (isCopyReady(order)) {
+            return true;
+        }
+        Long parentId = order.getParentWorkOrderId();
+        if (parentId == null) {
+            return false;
+        }
+        XqWorkOrderDO source = cache.get(parentId);
+        if (source == null) {
+            source = workOrderMapper.selectById(parentId);
+            if (source != null) {
+                cache.put(parentId, source);
+            }
+        }
+        if (source == null || !isCopyReady(source)) {
+            source = null;
+            for (XqWorkOrderDO sib : workOrderMapper.selectByParentIds(List.of(parentId))) {
+                if (sib == null || sib.getId() == null || sib.getId().equals(order.getId())) {
+                    continue;
+                }
+                if (isCopyReady(sib)) {
+                    source = sib;
+                    cache.put(sib.getId(), sib);
+                    break;
+                }
+            }
+        }
+        if (source == null) {
+            return false;
+        }
+        workOrderMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getId, order.getId())
+                .set(XqWorkOrderDO::getContentTitle, source.getContentTitle())
+                .set(XqWorkOrderDO::getContentSellingPoints, source.getContentSellingPoints())
+                .set(XqWorkOrderDO::getCopyResultJson, source.getCopyResultJson())
+                .set(XqWorkOrderDO::getImagePromptJson, source.getImagePromptJson())
+                .set(XqWorkOrderDO::getRpaCopyStatus,
+                        StrUtil.blankToDefault(order.getRpaCopyStatus(), "inherited"))
+                .set(XqWorkOrderDO::getWorkflowPhase, "image")
+                .set(order.getCopyUserId() == null, XqWorkOrderDO::getCopyUserId, source.getCopyUserId()));
+        XqWorkOrderDO refreshed = workOrderMapper.selectById(order.getId());
+        if (refreshed == null || !isCopyReady(refreshed)) {
+            return false;
+        }
+        cache.put(order.getId(), refreshed);
+        order.setContentTitle(refreshed.getContentTitle());
+        order.setContentSellingPoints(refreshed.getContentSellingPoints());
+        order.setCopyResultJson(refreshed.getCopyResultJson());
+        order.setImagePromptJson(refreshed.getImagePromptJson());
+        order.setCopyUserId(refreshed.getCopyUserId());
+        order.setRpaCopyStatus(refreshed.getRpaCopyStatus());
+        return true;
+    }
+
+    /** 本人文案/下发，或变体跟家族主体同属本人，可分配 */
+    private boolean canOperatorAssignImage(XqWorkOrderDO order, Map<Long, XqWorkOrderDO> cache,
+                                           Long operatorUserId) {
+        if (operatorUserId == null) {
+            return true;
+        }
+        if (order.getCopyUserId() == null || operatorUserId.equals(order.getCopyUserId())
+                || operatorUserId.equals(order.getAssigneeUserId())) {
+            return true;
+        }
+        Long parentId = order.getParentWorkOrderId();
+        if (parentId == null) {
+            return false;
+        }
+        XqWorkOrderDO parent = cache.get(parentId);
+        if (parent == null) {
+            parent = workOrderMapper.selectById(parentId);
+            if (parent != null) {
+                cache.put(parentId, parent);
+            }
+        }
+        return parent != null && (operatorUserId.equals(parent.getCopyUserId())
+                || operatorUserId.equals(parent.getAssigneeUserId())
+                || String.valueOf(operatorUserId).equals(StrUtil.blankToDefault(parent.getCreator(), "")));
     }
 
     @Override
@@ -802,11 +1117,23 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         }
         java.util.Map<String, String> values =
                 reqVO.getValues() == null ? java.util.Map.of() : reqVO.getValues();
+        String mode = StrUtil.blankToDefault(reqVO.getListingMode(), "api").trim().toLowerCase();
+
         XqWorkOrderDO snap = new XqWorkOrderDO();
         snap.setId(order.getId());
         snap.setListingValuesJson(JSONUtil.toJsonStr(values));
-        workOrderMapper.updateById(snap);
+        snap.setWorkflowPhase("list");
 
+        // 无 API：导表成功 → 待用户确认是否上架
+        if ("export".equals(mode)) {
+            snap.setListingStatus("export_pending_confirm");
+            snap.setListingResultJson("{\"ok\":true,\"mode\":\"export\",\"message\":\"导表成功，待确认上架\"}");
+            workOrderMapper.updateById(snap);
+            return null;
+        }
+
+        // 有 API：程序提交并判定成功上架
+        workOrderMapper.updateById(snap);
         XqWorkOrderCompleteReqVO complete = new XqWorkOrderCompleteReqVO();
         complete.setId(order.getId());
         complete.setProductSku(StrUtil.blankToDefault(reqVO.getProductSku(),
@@ -818,7 +1145,29 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
         XqWorkOrderDO result = new XqWorkOrderDO();
         result.setId(order.getId());
-        result.setListingResultJson("{\"ok\":true,\"message\":\"已提交上架\"}");
+        result.setListingStatus("listed");
+        result.setListingResultJson("{\"ok\":true,\"mode\":\"api\",\"message\":\"API 上架成功\"}");
+        workOrderMapper.updateById(result);
+        return productId;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long confirmListing(Long id) {
+        XqWorkOrderDO order = validateDoing(id);
+        if (!"export_pending_confirm".equals(StrUtil.blankToDefault(order.getListingStatus(), ""))) {
+            throw exception(XQ_WORK_ORDER_STATUS_INVALID);
+        }
+        XqWorkOrderCompleteReqVO complete = new XqWorkOrderCompleteReqVO();
+        complete.setId(order.getId());
+        complete.setProductSku(StrUtil.blankToDefault(order.getExternalSku(), "SKU" + order.getId()));
+        complete.setProductName(StrUtil.blankToDefault(order.getContentTitle(), order.getTitle()));
+        complete.setCategoryName(order.getListingCategoryName());
+        Long productId = completeWorkOrder(complete);
+        XqWorkOrderDO result = new XqWorkOrderDO();
+        result.setId(order.getId());
+        result.setListingStatus("listed");
+        result.setListingResultJson("{\"ok\":true,\"mode\":\"export\",\"message\":\"用户确认已上架\"}");
         workOrderMapper.updateById(result);
         return productId;
     }
@@ -828,10 +1177,18 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         return "done".equals(s) || "generated".equals(s) || "revised".equals(s);
     }
 
+    /** 美工是否已开始执行（开始后不可改派） */
+    private static boolean isImageExecutionStarted(XqWorkOrderDO order) {
+        String s = StrUtil.blankToDefault(order.getImageStatus(), "").toLowerCase();
+        return "running".equals(s) || "generated".equals(s) || "revised".equals(s)
+                || "rejected".equals(s) || "done".equals(s);
+    }
+
     private static String normalizeImageStatus(String raw) {
         String s = StrUtil.blankToDefault(raw, "").trim().toLowerCase();
-        if ("todo".equals(s) || "pending".equals(s) || "generated".equals(s)
-                || "rejected".equals(s) || "revised".equals(s) || "done".equals(s)) {
+        if ("todo".equals(s) || "pending".equals(s) || "running".equals(s)
+                || "generated".equals(s) || "rejected".equals(s)
+                || "revised".equals(s) || "done".equals(s)) {
             return s;
         }
         return null;

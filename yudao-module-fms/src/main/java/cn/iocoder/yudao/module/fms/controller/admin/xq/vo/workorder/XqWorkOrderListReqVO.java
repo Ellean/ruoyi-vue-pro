@@ -23,4 +23,7 @@ public class XqWorkOrderListReqVO {
     @Schema(description = "模板字段值 code -> value")
     private Map<String, String> values = new HashMap<>();
 
+    @Schema(description = "上架方式：api=程序调用判断成功；export=导表，成功后待用户确认")
+    private String listingMode;
+
 }

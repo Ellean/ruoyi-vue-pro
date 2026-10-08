@@ -101,6 +101,13 @@ public interface AiModelService {
     ChatModel getChatModel(Long id);
 
     /**
+     * 清除 ChatModel 缓存（PROTOCOL_ERROR 后强制重建 HTTP/1.1 客户端）
+     *
+     * @param id 模型编号
+     */
+    void evictChatModel(Long id);
+
+    /**
      * 获得 ImageModel 对象
      *
      * @param id 编号

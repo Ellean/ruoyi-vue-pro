@@ -35,6 +35,9 @@ public class AiImageDrawReqVO {
     @NotNull(message = "图片宽度不能为空")
     private Integer width;
 
+    @Schema(description = "参考图 URL（可选；有则走图生图/改图）", example = "https://www.iocoder.cn/x.png")
+    private String referImageUrl;
+
     // ========== 各平台绘画的拓展参数 ==========
 
     /**

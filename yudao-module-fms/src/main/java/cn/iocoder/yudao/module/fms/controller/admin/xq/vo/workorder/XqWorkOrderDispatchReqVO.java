@@ -7,6 +7,7 @@ import jakarta.validation.constraints.NotEmpty;
 import lombok.Data;
 
 import java.util.List;
+import java.util.Map;
 
 @Schema(description = "管理后台 - 选品库下发工作台 Request VO")
 @Data
@@ -30,6 +31,12 @@ public class XqWorkOrderDispatchReqVO {
 
     @Schema(description = "上架分类名")
     private String listingCategoryName;
+
+    @Schema(description = "SKU → 复用文案来源任务 ID")
+    private Map<String, Long> reuseCopyFromIds;
+
+    @Schema(description = "SKU → 复用图片来源任务 ID")
+    private Map<String, Long> reuseImageFromIds;
 
     @Schema(description = "选中的产品列表", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotEmpty(message = "请先选择要下发的产品")

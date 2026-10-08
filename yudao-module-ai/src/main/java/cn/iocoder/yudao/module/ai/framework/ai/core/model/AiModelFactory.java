@@ -30,6 +30,15 @@ public interface AiModelFactory {
     ChatModel getOrCreateChatModel(AiPlatformEnum platform, String apiKey, String url);
 
     /**
+     * 清除指定配置的 ChatModel 缓存（HTTP/2 PROTOCOL_ERROR 后重建客户端用）
+     *
+     * @param platform 平台
+     * @param apiKey API KEY
+     * @param url API URL
+     */
+    void evictChatModel(AiPlatformEnum platform, String apiKey, String url);
+
+    /**
      * 基于默认配置，获得 ChatModel 对象
      *
      * 默认配置，指的是在 application.yaml 配置文件中的 spring.ai 相关的配置

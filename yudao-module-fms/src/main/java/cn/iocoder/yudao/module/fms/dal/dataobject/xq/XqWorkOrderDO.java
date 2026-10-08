@@ -96,6 +96,10 @@ public class XqWorkOrderDO extends BaseDO {
     /** 上架调用结果 */
     private String listingResultJson;
     /**
+     * 上架子状态：export_pending_confirm（导表成功待确认）/ listed
+     */
+    private String listingStatus;
+    /**
      * 工作流阶段：copy / image / list / done / closed
      */
     private String workflowPhase;

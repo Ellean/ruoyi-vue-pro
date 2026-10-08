@@ -21,8 +21,7 @@ public class XqImageGenRuleSaveReqVO {
     @NotBlank(message = "规则名称不能为空")
     private String name;
 
-    @Schema(description = "主提示词", requiredMode = Schema.RequiredMode.REQUIRED)
-    @NotBlank(message = "提示词不能为空")
+    @Schema(description = "规则摘要（兼容旧字段；出图槽位以 configJson.slots 为准）")
     private String promptText;
 
     @Schema(description = "反向提示词")

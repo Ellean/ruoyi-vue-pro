@@ -18,12 +18,16 @@ import cn.iocoder.yudao.module.ai.controller.admin.image.vo.AiImageUpdateReqVO;
 import cn.iocoder.yudao.module.ai.controller.admin.image.vo.midjourney.AiMidjourneyActionReqVO;
 import cn.iocoder.yudao.module.ai.controller.admin.image.vo.midjourney.AiMidjourneyImagineReqVO;
 import cn.iocoder.yudao.module.ai.dal.dataobject.image.AiImageDO;
+import cn.iocoder.yudao.module.ai.dal.dataobject.model.AiApiKeyDO;
 import cn.iocoder.yudao.module.ai.dal.dataobject.model.AiModelDO;
 import cn.iocoder.yudao.module.ai.dal.mysql.image.AiImageMapper;
 import cn.iocoder.yudao.module.ai.enums.image.AiImageStatusEnum;
 import cn.iocoder.yudao.module.ai.enums.model.AiPlatformEnum;
+import cn.iocoder.yudao.module.ai.framework.ai.core.model.AiImageGatewayModelUtils;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.midjourney.api.MidjourneyApi;
+import cn.iocoder.yudao.module.ai.framework.ai.core.model.openai.OpenAiCompatibleImageEditApi;
 import cn.iocoder.yudao.module.ai.framework.ai.core.model.siliconflow.SiliconFlowImageOptions;
+import cn.iocoder.yudao.module.ai.service.model.AiApiKeyService;
 import cn.iocoder.yudao.module.ai.service.model.AiModelService;
 import cn.iocoder.yudao.module.infra.api.file.FileApi;
 import com.alibaba.cloud.ai.dashscope.image.DashScopeImageOptions;
@@ -41,6 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -60,6 +65,9 @@ public class AiImageServiceImpl implements AiImageService {
 
     @Resource
     private AiModelService modelService;
+
+    @Resource
+    private AiApiKeyService apiKeyService;
 
     @Resource
     private AiImageMapper imageMapper;
@@ -95,10 +103,22 @@ public class AiImageServiceImpl implements AiImageService {
         // 1. 校验模型
         AiModelDO model = modelService.validateModel(drawReqVO.getModelId());
 
+        // 参考图写入 options，便于详情回显 / 重新生成
+        String referImageUrl = resolveReferImageUrl(drawReqVO);
+        Map<String, String> options = drawReqVO.getOptions() != null
+                ? new HashMap<>(drawReqVO.getOptions()) : new HashMap<>();
+        if (StrUtil.isNotBlank(referImageUrl)) {
+            options.put("referImageUrl", referImageUrl);
+            drawReqVO.setReferImageUrl(referImageUrl);
+        }
+        drawReqVO.setOptions(options);
+
         // 2. 保存数据库
+        Map<String, Object> optionMap = new HashMap<>(options);
         AiImageDO image = BeanUtils.toBean(drawReqVO, AiImageDO.class).setUserId(userId)
                 .setPlatform(model.getPlatform()).setModelId(model.getId()).setModel(model.getModel())
-                .setPublicStatus(false).setStatus(AiImageStatusEnum.IN_PROGRESS.getStatus());
+                .setPublicStatus(false).setStatus(AiImageStatusEnum.IN_PROGRESS.getStatus())
+                .setOptions(optionMap);
         imageMapper.insert(image);
 
         // 3. 异步绘制，后续前端通过返回的 id 进行轮询结果
@@ -110,48 +130,158 @@ public class AiImageServiceImpl implements AiImageService {
     @SuppressWarnings("ConstantValue")
     public void executeDrawImage(AiImageDO image, AiImageDrawReqVO reqVO, AiModelDO model) {
         try {
-            // 1.1 构建请求
-            ImageOptions request = buildImageOptions(reqVO, model);
-            // 1.2 执行请求
-            ImageModel imageModel = modelService.getImageModel(model.getId());
-            ImageResponse response = imageModel.call(new ImagePrompt(reqVO.getPrompt(), request));
-            if (response.getResult() == null) {
-                throw new IllegalArgumentException("生成结果为空");
+            AiApiKeyDO apiKey = apiKeyService.validateApiKey(model.getKeyId());
+            String referImageUrl = resolveReferImageUrl(reqVO);
+
+            List<String> candidates;
+            String seedModel = model.getModel();
+            if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.OPENAI.getPlatform())
+                    && StrUtil.isNotBlank(referImageUrl)
+                    && StrUtil.isNotBlank(apiKey.getImageEditModel())) {
+                seedModel = apiKey.getImageEditModel();
+            }
+            if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.OPENAI.getPlatform())
+                    && AiImageGatewayModelUtils.isGptImageModel(seedModel)) {
+                candidates = AiImageGatewayModelUtils.channelFailoverCandidates(apiKey, seedModel);
+            } else {
+                candidates = List.of(StrUtil.blankToDefault(seedModel, ""));
             }
 
-            // 2. 上传到文件服务（中转可能返回空 url + b64_json）
-            var output = response.getResult().getOutput();
-            String b64Json = output.getB64Json();
-            String url = output.getUrl();
+            String usedModel = model.getModel();
             byte[] fileContent;
-            if (StrUtil.isNotEmpty(b64Json)) {
-                fileContent = Base64.decode(b64Json);
-            } else if (StrUtil.isNotBlank(url)) {
-                fileContent = HttpUtil.downloadBytes(url);
+            Exception lastError = null;
+
+            // 有参考图且 OpenAI：走改图（edits / reference_images），不走文生图
+            if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.OPENAI.getPlatform())
+                    && StrUtil.isNotBlank(referImageUrl)) {
+                byte[] referBytes = null;
+                if (!OpenAiCompatibleImageEditApi.isToapis(apiKey)) {
+                    referBytes = HttpUtil.downloadBytes(referImageUrl);
+                }
+                OpenAiCompatibleImageEditApi.EditResult editResult = null;
+                for (String candidate : candidates) {
+                    if (StrUtil.isBlank(candidate)) {
+                        continue;
+                    }
+                    try {
+                        editResult = OpenAiCompatibleImageEditApi.edit(
+                                apiKey, candidate, reqVO.getPrompt(),
+                                reqVO.getWidth(), reqVO.getHeight(),
+                                referImageUrl, referBytes);
+                        usedModel = editResult.getModel();
+                        if (!StrUtil.equals(candidate, model.getModel())) {
+                            log.info("[executeDrawImage][image({}) 改图模型切换 {} -> {}]",
+                                    image.getId(), model.getModel(), usedModel);
+                        }
+                        break;
+                    } catch (Exception ex) {
+                        lastError = ex;
+                        if (AiImageGatewayModelUtils.isNoAvailableChannel(ex)) {
+                            log.warn("[executeDrawImage][image({}) 改图无通道 model={}，尝试下一候选] {}",
+                                    image.getId(), candidate, ex.getMessage());
+                            continue;
+                        }
+                        throw ex;
+                    }
+                }
+                if (editResult == null) {
+                    throw lastError != null ? lastError
+                            : new IllegalArgumentException("改图结果为空");
+                }
+                if (StrUtil.isNotEmpty(editResult.getB64Json())) {
+                    fileContent = Base64.decode(editResult.getB64Json());
+                } else if (StrUtil.isNotBlank(editResult.getUrl())) {
+                    fileContent = HttpUtil.downloadBytes(editResult.getUrl());
+                } else {
+                    throw new IllegalArgumentException("改图结果缺少图片数据（url 与 b64_json 均为空）");
+                }
             } else {
-                throw new IllegalArgumentException("生成结果缺少图片数据（url 与 b64_json 均为空）");
+                ImageModel imageModel = modelService.getImageModel(model.getId());
+                ImageResponse response = null;
+                for (String candidate : candidates) {
+                    if (StrUtil.isBlank(candidate)) {
+                        continue;
+                    }
+                    try {
+                        ImageOptions request = buildImageOptions(reqVO, model, candidate);
+                        response = imageModel.call(new ImagePrompt(reqVO.getPrompt(), request));
+                        if (response.getResult() == null) {
+                            throw new IllegalArgumentException("生成结果为空");
+                        }
+                        usedModel = candidate;
+                        if (!StrUtil.equals(candidate, model.getModel())) {
+                            log.info("[executeDrawImage][image({}) 模型切换 {} -> {}]",
+                                    image.getId(), model.getModel(), candidate);
+                        }
+                        break;
+                    } catch (Exception ex) {
+                        lastError = ex;
+                        if (AiImageGatewayModelUtils.isNoAvailableChannel(ex)) {
+                            log.warn("[executeDrawImage][image({}) 无通道 model={}，尝试下一候选] {}",
+                                    image.getId(), candidate, ex.getMessage());
+                            continue;
+                        }
+                        throw ex;
+                    }
+                }
+                if (response == null || response.getResult() == null) {
+                    throw lastError != null ? lastError
+                            : new IllegalArgumentException("生成结果为空");
+                }
+
+                // 上传到文件服务（中转可能返回空 url + b64_json）
+                var output = response.getResult().getOutput();
+                String b64Json = output.getB64Json();
+                String url = output.getUrl();
+                if (StrUtil.isNotEmpty(b64Json)) {
+                    fileContent = Base64.decode(b64Json);
+                } else if (StrUtil.isNotBlank(url)) {
+                    fileContent = HttpUtil.downloadBytes(url);
+                } else {
+                    throw new IllegalArgumentException("生成结果缺少图片数据（url 与 b64_json 均为空）");
+                }
             }
+
             String filePath = fileApi.createFile(fileContent);
 
-            // 3. 更新数据库
-            imageMapper.updateById(new AiImageDO().setId(image.getId()).setStatus(AiImageStatusEnum.SUCCESS.getStatus())
+            // 更新数据库（记下实际打到上游的模型名）
+            imageMapper.updateById(new AiImageDO().setId(image.getId())
+                    .setStatus(AiImageStatusEnum.SUCCESS.getStatus())
+                    .setModel(usedModel)
                     .setPicUrl(filePath).setFinishTime(LocalDateTime.now()));
         } catch (Exception ex) {
             log.error("[executeDrawImage][image({}) 生成异常]", image, ex);
+            String tip = StrUtil.blankToDefault(ex.getMessage(), "生成失败");
+            if (AiImageGatewayModelUtils.isNoAvailableChannel(ex)) {
+                tip = tip + "。请到「AI 大模型 → API 密钥」核对中转类型/Base URL，"
+                        + "并在中转控制台开通 gpt-image 通道；Hao 站模型标识需带 openai/ 前缀。";
+            }
             imageMapper.updateById(new AiImageDO().setId(image.getId())
                     .setStatus(AiImageStatusEnum.FAIL.getStatus())
-                    .setErrorMessage(ex.getMessage()).setFinishTime(LocalDateTime.now()));
+                    .setErrorMessage(StrUtil.maxLength(tip, 500))
+                    .setFinishTime(LocalDateTime.now()));
         }
     }
 
-    private static ImageOptions buildImageOptions(AiImageDrawReqVO draw, AiModelDO model) {
+    private static String resolveReferImageUrl(AiImageDrawReqVO reqVO) {
+        if (reqVO == null) {
+            return null;
+        }
+        if (StrUtil.isNotBlank(reqVO.getReferImageUrl())) {
+            return StrUtil.trim(reqVO.getReferImageUrl());
+        }
+        return StrUtil.trim(MapUtil.getStr(reqVO.getOptions(), "referImageUrl"));
+    }
+
+    private static ImageOptions buildImageOptions(AiImageDrawReqVO draw, AiModelDO model, String modelName) {
+        String resolvedModel = StrUtil.blankToDefault(modelName, model.getModel());
         if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.OPENAI.getPlatform())) {
             // https://platform.openai.com/docs/api-reference/images/create
             // gpt-image-*：中转/官方都不接受 response_format，且默认返回 b64_json；勿传 style
             // dall-e-2/3：可显式要 b64_json；仅 dall-e-3 支持 style
-            boolean gptImage = StrUtil.startWithIgnoreCase(model.getModel(), "gpt-image");
+            boolean gptImage = AiImageGatewayModelUtils.isGptImageModel(resolvedModel);
             OpenAiImageOptions.Builder builder = OpenAiImageOptions.builder()
-                    .model(model.getModel())
+                    .model(resolvedModel)
                     .height(draw.getHeight()).width(draw.getWidth());
             if (gptImage) {
                 // Aixoras/中转：gpt-image 带 response_format 会拒；quality=auto 为常用兼容写法
@@ -160,19 +290,20 @@ public class AiImageServiceImpl implements AiImageService {
                 builder.responseFormat("b64_json");
             }
             String style = MapUtil.getStr(draw.getOptions(), "style");
-            if (StrUtil.isNotEmpty(style) && StrUtil.equals(model.getModel(), "dall-e-3")) {
+            String bare = AiImageGatewayModelUtils.bareModel(resolvedModel);
+            if (StrUtil.isNotEmpty(style) && StrUtil.equals(bare, "dall-e-3")) {
                 builder.style(style);
             }
             return builder.build();
         } else if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.SILICON_FLOW.getPlatform())) {
             // https://docs.siliconflow.cn/cn/api-reference/images/images-generations
-            return SiliconFlowImageOptions.builder().model(model.getModel())
+            return SiliconFlowImageOptions.builder().model(resolvedModel)
                     .height(draw.getHeight()).width(draw.getWidth())
                     .build();
         }  else if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.STABLE_DIFFUSION.getPlatform())) {
             // https://platform.stability.ai/docs/api-reference#tag/SDXL-and-SD1.6/operation/textToImage
             // https://platform.stability.ai/docs/api-reference#tag/Text-to-Image/operation/textToImage
-            return StabilityAiImageOptions.builder().model(model.getModel())
+            return StabilityAiImageOptions.builder().model(resolvedModel)
                     .height(draw.getHeight()).width(draw.getWidth())
                     .seed(Long.valueOf(draw.getOptions().get("seed")))
                     .cfgScale(Float.valueOf(draw.getOptions().get("scale")))
@@ -183,7 +314,7 @@ public class AiImageServiceImpl implements AiImageService {
                     .build();
         } else if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.TONG_YI.getPlatform())) {
             return DashScopeImageOptions.builder()
-                    .model(model.getModel()).n(1)
+                    .model(resolvedModel).n(1)
                     .height(draw.getHeight()).width(draw.getWidth())
                     .build();
         }
