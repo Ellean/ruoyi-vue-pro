@@ -64,6 +64,8 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     @Resource
     private XqCopyPipelineService copyPipelineService;
     @Resource
+    private XqImagePipelineService imagePipelineService;
+    @Resource
     private XqGigaProductMapper gigaProductMapper;
     @Resource
     private XqStoreScopeService storeScopeService;
@@ -840,30 +842,21 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     }
 
     @Override
-    public XqWorkOrderDO generateImage(Long id) {
+    public XqWorkOrderDO generateImage(Long id, Long userId) {
         XqWorkOrderDO order = validateDoing(id);
-        // 原逻辑：必须先文案，再图片
         if (!isCopyReady(order)) {
             throw exception(XQ_WORK_ORDER_COPY_REQUIRED);
         }
-        // 进入图片执行中
-        XqWorkOrderDO running = new XqWorkOrderDO();
-        running.setId(order.getId());
-        running.setImageStatus("running");
-        running.setWorkflowPhase("image");
-        workOrderMapper.updateById(running);
-
-        String image = StrUtil.blankToDefault(order.getCoverUrl(), "");
-        if (StrUtil.isBlank(image)) {
-            image = "https://via.placeholder.com/800x800.png?text=" + order.getExternalSku();
-        }
-        XqWorkOrderDO update = new XqWorkOrderDO();
-        update.setId(order.getId());
-        update.setGeneratedImageUrl(image);
-        update.setImageStatus("generated");
-        update.setWorkflowPhase("image");
-        workOrderMapper.updateById(update);
+        imagePipelineService.enqueueImageJob(order, userId);
         return workOrderMapper.selectById(id);
+    }
+
+    @Override
+    public int enqueueImageRpa(XqWorkOrderBatchIdsReqVO reqVO, Long userId) {
+        if (reqVO == null || CollUtil.isEmpty(reqVO.getIds())) {
+            throw exception(XQ_DISPATCH_EMPTY);
+        }
+        return imagePipelineService.enqueueImageJobs(reqVO.getIds(), userId);
     }
 
     @Override
@@ -1100,6 +1093,17 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         }
         if ("generated".equals(status) && !isImageReady(order)) {
             throw exception(XQ_WORK_ORDER_IMAGE_REQUIRED);
+        }
+        // 撤回到待执行：清掉生图 RPA 执行态，便于重新入队
+        if ("pending".equals(status) || "todo".equals(status)) {
+            workOrderMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XqWorkOrderDO>()
+                    .eq(XqWorkOrderDO::getId, order.getId())
+                    .set(XqWorkOrderDO::getImageStatus, status)
+                    .set(XqWorkOrderDO::getWorkflowPhase, "image")
+                    .set(XqWorkOrderDO::getRpaImageStatus, null)
+                    .set(XqWorkOrderDO::getRpaImageError, null)
+                    .set(XqWorkOrderDO::getRpaImageWorkUuid, null));
+            return;
         }
         XqWorkOrderDO update = new XqWorkOrderDO();
         update.setId(order.getId());

@@ -19,9 +19,13 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderR
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyCallbackReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyPullReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyPullRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaImageCallbackReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaImagePullReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaImagePullRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 import cn.iocoder.yudao.module.fms.service.xq.XqCopyPipelineService;
+import cn.iocoder.yudao.module.fms.service.xq.XqImagePipelineService;
 import cn.iocoder.yudao.module.fms.service.xq.XqWorkOrderService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -48,6 +52,8 @@ public class XqWorkOrderController {
     private XqWorkOrderService workOrderService;
     @Resource
     private XqCopyPipelineService copyPipelineService;
+    @Resource
+    private XqImagePipelineService imagePipelineService;
 
     @GetMapping("/page")
     @Operation(summary = "工作台任务分页")
@@ -64,7 +70,10 @@ public class XqWorkOrderController {
         pageReqVO.setAssigneeUserId(null);
         PageResult<XqWorkOrderDO> page = workOrderService.getWorkOrderPage(pageReqVO);
         PageResult<XqWorkOrderRespVO> vo = BeanUtils.toBean(page, XqWorkOrderRespVO.class);
-        workOrderService.attachVariants(vo.getList());
+        // 图片池扁平列表：每条就是可跑图 SKU，不再挂主体/变体家族
+        if (pageReqVO.getMineImageUserId() == null) {
+            workOrderService.attachVariants(vo.getList());
+        }
         return success(vo);
     }
 
@@ -209,11 +218,48 @@ public class XqWorkOrderController {
     }
 
     @PostMapping("/generate-image")
-    @Operation(summary = "生成图片（演示）")
+    @Operation(summary = "入队生图 RPA（由美工本机机器人拉取执行）")
     @Parameter(name = "id", description = "任务编号", required = true)
     @PreAuthorize("@ss.hasPermission('xq:work-order:gen-image')")
     public CommonResult<XqWorkOrderRespVO> generateImage(@RequestParam("id") Long id) {
-        return success(BeanUtils.toBean(workOrderService.generateImage(id), XqWorkOrderRespVO.class));
+        return success(BeanUtils.toBean(
+                workOrderService.generateImage(id, getLoginUserId()), XqWorkOrderRespVO.class));
+    }
+
+    @PostMapping("/enqueue-image-rpa")
+    @Operation(summary = "批量入队生图 RPA")
+    @PreAuthorize("@ss.hasPermission('xq:work-order:gen-image')")
+    public CommonResult<Integer> enqueueImageRpa(@Valid @RequestBody XqWorkOrderBatchIdsReqVO reqVO) {
+        return success(workOrderService.enqueueImageRpa(reqVO, getLoginUserId()));
+    }
+
+    @PostMapping("/rpa-image-pull")
+    @Operation(summary = "RPA：按当前登录美工领取待跑生图 SKU")
+    @PreAuthorize("@ss.hasPermission('xq:work-order:query')")
+    public CommonResult<XqWorkOrderRpaImagePullRespVO> rpaImagePull(
+            @RequestBody(required = false) XqWorkOrderRpaImagePullReqVO reqVO) {
+        Integer limit = reqVO == null ? null : reqVO.getLimit();
+        List<java.util.Map<String, Object>> jobs = imagePipelineService.pullImageJobs(getLoginUserId(), limit);
+        XqWorkOrderRpaImagePullRespVO resp = new XqWorkOrderRpaImagePullRespVO();
+        resp.setJobs(jobs);
+        resp.setCount(jobs.size());
+        return success(resp);
+    }
+
+    @GetMapping("/rpa-image-detail")
+    @Operation(summary = "RPA：按任务拉生图详情（提示词/原图/规则）")
+    @PreAuthorize("@ss.hasPermission('xq:work-order:query')")
+    public CommonResult<java.util.Map<String, Object>> rpaImageDetail(
+            @RequestParam("workOrderId") Long workOrderId) {
+        return success(imagePipelineService.buildImageDetailById(getLoginUserId(), workOrderId));
+    }
+
+    @PostMapping("/rpa-image-callback")
+    @Operation(summary = "生图 RPA 回调（写回成品图）")
+    @PermitAll
+    public CommonResult<Boolean> rpaImageCallback(@Valid @RequestBody XqWorkOrderRpaImageCallbackReqVO reqVO) {
+        imagePipelineService.handleCallback(reqVO);
+        return success(true);
     }
 
     @PostMapping("/complete")

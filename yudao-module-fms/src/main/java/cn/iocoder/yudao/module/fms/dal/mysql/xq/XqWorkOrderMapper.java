@@ -12,6 +12,7 @@ import org.apache.ibatis.annotations.Select;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 @Mapper
@@ -22,6 +23,13 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
         if (reqVO.getKeyword() != null && !reqVO.getKeyword().isBlank()) {
             childParentIds = selectParentIdsByChildKeyword(reqVO.getKeyword().trim());
         }
+        // 图片池：扁平拉「相关家族全部 SKU」，UI 不区分主/变体
+        boolean imagePoolFlat = reqVO.getMineImageUserId() != null;
+        Long imageArtistId = null;
+        if (imagePoolFlat) {
+            imageArtistId = reqVO.getImageUserId() != null
+                    ? reqVO.getImageUserId() : reqVO.getMineImageUserId();
+        }
         LambdaQueryWrapperX<XqWorkOrderDO> wrapper = new LambdaQueryWrapperX<XqWorkOrderDO>()
                 .likeIfPresent(XqWorkOrderDO::getNo, reqVO.getNo())
                 .likeIfPresent(XqWorkOrderDO::getTitle, reqVO.getTitle())
@@ -30,14 +38,15 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eqIfPresent(XqWorkOrderDO::getGigaCategoryId, reqVO.getGigaCategoryId())
                 .eqIfPresent(XqWorkOrderDO::getAssigneeUserId, reqVO.getAssigneeUserId())
                 .eqIfPresent(XqWorkOrderDO::getCopyUserId, reqVO.getCopyUserId())
-                .eqIfPresent(XqWorkOrderDO::getImageUserId, reqVO.getImageUserId())
+                // 图片池用家族展开，避免只 eq 美工时漏掉未单独写 imageUserId 的变体行
+                .eqIfPresent(XqWorkOrderDO::getImageUserId, imagePoolFlat ? null : reqVO.getImageUserId())
                 .eqIfPresent(XqWorkOrderDO::getImageStatus, reqVO.getImageStatus())
                 .eqIfPresent(XqWorkOrderDO::getWorkflowPhase, reqVO.getWorkflowPhase())
                 .eqIfPresent(XqWorkOrderDO::getListingPlatformId, reqVO.getListingPlatformId())
                 .eqIfPresent(XqWorkOrderDO::getListingShopId, reqVO.getListingShopId())
                 .eqIfPresent(XqWorkOrderDO::getListingCategoryId, reqVO.getListingCategoryId());
         applyFlowStatus(wrapper, reqVO.getFlowStatus());
-        if (reqVO.getBoundUserId() != null) {
+        if (reqVO.getBoundUserId() != null && !imagePoolFlat) {
             Long uid = reqVO.getBoundUserId();
             String creator = String.valueOf(uid);
             wrapper.and(w -> w.eq(XqWorkOrderDO::getAssigneeUserId, uid)
@@ -50,25 +59,16 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                     .or()
                     .eq(XqWorkOrderDO::getAssigneeUserId, reqVO.getMineUserId()));
         }
-        if (reqVO.getMineImageUserId() != null) {
-            Long uid = reqVO.getMineImageUserId();
-            // 父单自身分给美工，或任一变体分给美工，都要能在图片池看到该家族
-            List<Long> parentIdsByChildImage = selectParentIdsByImageUserId(uid);
-            wrapper.and(w -> {
-                w.eq(XqWorkOrderDO::getImageUserId, uid)
-                        .or()
-                        .eq(XqWorkOrderDO::getCopyUserId, uid)
-                        .or()
-                        .eq(XqWorkOrderDO::getAssigneeUserId, uid);
-                if (cn.hutool.core.collection.CollUtil.isNotEmpty(parentIdsByChildImage)) {
-                    w.or().in(XqWorkOrderDO::getId, parentIdsByChildImage);
-                }
-            });
+        if (imagePoolFlat && imageArtistId != null) {
+            applyImagePoolFamilyFilter(wrapper, imageArtistId);
         }
         if (Boolean.TRUE.equals(reqVO.getListingReady())) {
             wrapper.in(XqWorkOrderDO::getImageStatus, "done", "generated", "revised");
         }
-        wrapper.isNull(XqWorkOrderDO::getParentWorkOrderId);
+        // 文案池/任务列表仍只出主体；图片池出扁平全量 SKU
+        if (!imagePoolFlat) {
+            wrapper.isNull(XqWorkOrderDO::getParentWorkOrderId);
+        }
         if (Boolean.TRUE.equals(reqVO.getCopyReady())) {
             wrapper.isNotNull(XqWorkOrderDO::getContentTitle)
                     .ne(XqWorkOrderDO::getContentTitle, "");
@@ -148,6 +148,44 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
             + "AND image_user_id = #{uid}")
     List<Long> selectParentIdsByImageUserId(@Param("uid") Long uid);
 
+    @Select("SELECT id FROM xq_work_order "
+            + "WHERE deleted = 0 AND parent_work_order_id IS NULL "
+            + "AND image_user_id = #{uid}")
+    List<Long> selectRootIdsByImageUserId(@Param("uid") Long uid);
+
+    /**
+     * 图片池：凡家族内任一 SKU 分给该美工，则主体+全部变体一并进入扁平列表。
+     */
+    default void applyImagePoolFamilyFilter(LambdaQueryWrapperX<XqWorkOrderDO> wrapper, Long artistId) {
+        if (artistId == null) {
+            wrapper.eq(XqWorkOrderDO::getImageUserId, -1L);
+            return;
+        }
+        LinkedHashSet<Long> rootIds = new LinkedHashSet<>();
+        List<Long> roots = selectRootIdsByImageUserId(artistId);
+        if (roots != null) {
+            rootIds.addAll(roots);
+        }
+        List<Long> parentsOfChildren = selectParentIdsByImageUserId(artistId);
+        if (parentsOfChildren != null) {
+            for (Long pid : parentsOfChildren) {
+                if (pid != null) {
+                    rootIds.add(pid);
+                }
+            }
+        }
+        if (rootIds.isEmpty()) {
+            // 无家族根：仍返回直接分给该美工的行（含孤立变体）
+            wrapper.eq(XqWorkOrderDO::getImageUserId, artistId);
+            return;
+        }
+        wrapper.and(w -> w.eq(XqWorkOrderDO::getImageUserId, artistId)
+                .or()
+                .in(XqWorkOrderDO::getId, rootIds)
+                .or()
+                .in(XqWorkOrderDO::getParentWorkOrderId, rootIds));
+    }
+
     default List<XqWorkOrderDO> selectByParentIds(Collection<Long> parentIds) {
         if (parentIds == null || parentIds.isEmpty()) {
             return Collections.emptyList();
@@ -183,6 +221,22 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                         .isNull(XqWorkOrderDO::getCopyUserId))
                 .orderByDesc(XqWorkOrderDO::getId)
                 .last("LIMIT 1"));
+    }
+
+    /**
+     * 当前登录美工待跑生图：queued；以及超过 2 分钟仍 stuck 在 running 的回收。
+     */
+    default List<XqWorkOrderDO> selectPendingImageJobs(Long userId, int limit) {
+        int n = Math.max(1, Math.min(limit, 20));
+        java.time.LocalDateTime stuckBefore = java.time.LocalDateTime.now().minusMinutes(2);
+        return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getStatus, 10)
+                .eq(XqWorkOrderDO::getImageUserId, userId)
+                .and(w -> w.eq(XqWorkOrderDO::getRpaImageStatus, "queued")
+                        .or(w2 -> w2.eq(XqWorkOrderDO::getRpaImageStatus, "running")
+                                .lt(XqWorkOrderDO::getUpdateTime, stuckBefore)))
+                .orderByAsc(XqWorkOrderDO::getId)
+                .last("LIMIT " + n));
     }
 
     /** 进行中的同 SKU 任务 */

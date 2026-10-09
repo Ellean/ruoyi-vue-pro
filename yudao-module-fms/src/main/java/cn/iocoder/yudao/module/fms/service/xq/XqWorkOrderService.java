@@ -49,7 +49,14 @@ public interface XqWorkOrderService {
     /** 批量生成文案：领取为当前用户文案任务 */
     List<XqWorkOrderDO> batchGenerateCopy(@Valid XqWorkOrderBatchIdsReqVO reqVO, Long userId);
 
-    XqWorkOrderDO generateImage(Long id);
+    /**
+     * 入队生图 RPA（替代同步演示出图）。
+     * 写入 queued，由美工本机生图机器人拉取执行。
+     */
+    XqWorkOrderDO generateImage(Long id, Long userId);
+
+    /** 批量入队生图 RPA；返回成功条数 */
+    int enqueueImageRpa(@Valid XqWorkOrderBatchIdsReqVO reqVO, Long userId);
 
     /** 可分配美工：xq_image 角色用户 + 当前操作人 */
     List<XqAssignableImageUserRespVO> listAssignableImageUsers(Long operatorUserId);

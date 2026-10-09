@@ -55,6 +55,9 @@ public class XqWorkOrderRespVO {
     private String rpaCopyError;
     /** 是否勾选独立跑文案 RPA */
     private Boolean copyRpaSelected;
+    private String rpaImageWorkUuid;
+    private String rpaImageStatus;
+    private String rpaImageError;
     private LocalDateTime createTime;
     /** 货源详情补全（非作业单表字段） */
     private String itemCode;

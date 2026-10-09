@@ -114,5 +114,11 @@ public class XqWorkOrderDO extends BaseDO {
      * 主体默认 true；变体勾选后独立入队；未勾选在主体成功后沿用主体文案。
      */
     private Boolean copyRpaSelected;
+    /** 生图 RPA workUuid */
+    private String rpaImageWorkUuid;
+    /** idle/queued/running/success/fail */
+    private String rpaImageStatus;
+    /** 生图 RPA 失败原因 */
+    private String rpaImageError;
 
 }
