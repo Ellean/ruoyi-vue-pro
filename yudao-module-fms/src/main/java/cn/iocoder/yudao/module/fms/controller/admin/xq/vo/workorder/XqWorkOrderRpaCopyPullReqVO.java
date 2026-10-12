@@ -10,4 +10,7 @@ public class XqWorkOrderRpaCopyPullReqVO {
     @Schema(description = "最多领取条数；不传默认 20（上限 20）。扁平拉取主体+勾选变体")
     private Integer limit;
 
+    @Schema(description = "true=只探测不领取（管理端测试用）")
+    private Boolean dryRun;
+
 }

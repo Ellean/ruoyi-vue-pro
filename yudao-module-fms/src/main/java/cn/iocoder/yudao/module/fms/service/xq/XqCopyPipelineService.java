@@ -31,6 +31,12 @@ public interface XqCopyPipelineService {
     /** 按登录人领取待跑文案（精简 SKU 列表） */
     List<Map<String, Object>> pullCopyJobs(Long userId, Integer limit);
 
+    /** 探测待跑队列，不改 queued（管理端测试） */
+    List<Map<String, Object>> peekCopyJobs(Long userId, Integer limit);
+
+    /** 工作台认领人=我的进行中任务快照（探测用） */
+    List<Map<String, Object>> peekDeskCopyJobs(Long userId, Integer limit);
+
     /** 按 SKU 补齐原文案/原图/规则后返回 RPA 任务包 */
     Map<String, Object> buildCopyDetailBySku(Long userId, String sku);
 
@@ -39,5 +45,11 @@ public interface XqCopyPipelineService {
 
     /** 只读源库 Giga 产品（挂起主库事务） */
     XqGigaProductRow readGigaProduct(String gigaProductId, String sku);
+
+    /**
+     * 按本 SKU 补齐/纠正原图与原文案（不合并其它变体图）。
+     * 图片页刷新时可调用，用于清掉历史误合并的家族图。
+     */
+    void enrichSourceIfNeeded(XqWorkOrderDO order);
 
 }

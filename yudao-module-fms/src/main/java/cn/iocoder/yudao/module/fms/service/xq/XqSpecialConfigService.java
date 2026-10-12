@@ -126,6 +126,7 @@ public class XqSpecialConfigService {
             throw exception(XQ_SKU_RULE_DUPLICATE);
         }
         String name = StrUtil.blankToDefault(reqVO.getName(), defaultSkuName(reqVO.getPlatformId(), store, ownerUserId));
+        boolean isDefault = Boolean.TRUE.equals(reqVO.getIsDefault());
         LocalDateTime now = LocalDateTime.now();
         final String savedId;
         if (StrUtil.isBlank(excludeId)) {
@@ -139,6 +140,7 @@ public class XqSpecialConfigService {
             insert.setSegmentsJson(JSONUtil.toJsonStr(segments));
             insert.setEnabled(reqVO.getEnabled() == null || reqVO.getEnabled());
             insert.setSkipSku(skipSku);
+            insert.setIsDefault(isDefault);
             insert.setCreateDate(now);
             insert.setUpdateDate(now);
             onXqDs(() -> {
@@ -158,12 +160,19 @@ public class XqSpecialConfigService {
             exists.setSegmentsJson(JSONUtil.toJsonStr(segments));
             exists.setEnabled(reqVO.getEnabled() == null || reqVO.getEnabled());
             exists.setSkipSku(skipSku);
+            exists.setIsDefault(isDefault);
             exists.setUpdateDate(now);
             onXqDs(() -> {
                 skuRuleMapper.updateById(exists);
                 return true;
             });
             savedId = excludeId;
+        }
+        if (isDefault) {
+            onXqDs(() -> {
+                skuRuleMapper.clearDefaultByShop(sourcePlatformId, persistShopId, savedId);
+                return true;
+            });
         }
         XqPlatformSkuRuleDO saved = onXqDs(() -> skuRuleMapper.selectById(savedId));
         return toSkuVo(saved, storeScopeService.getPlatform(store.getPlatformId()), shopViewMap(),
@@ -219,6 +228,7 @@ public class XqSpecialConfigService {
             throw exception(XQ_MARKUP_RULE_DUPLICATE);
         }
         String name = StrUtil.blankToDefault(reqVO.getName(), defaultMarkupName(reqVO.getPlatformId(), store, ownerUserId));
+        boolean isDefault = Boolean.TRUE.equals(reqVO.getIsDefault());
         LocalDateTime now = LocalDateTime.now();
         final String savedId;
         if (StrUtil.isBlank(excludeId)) {
@@ -234,6 +244,7 @@ public class XqSpecialConfigService {
             insert.setFreightRate(freight);
             insert.setApplyTo(applyTo);
             insert.setEnabled(reqVO.getEnabled() == null || reqVO.getEnabled());
+            insert.setIsDefault(isDefault);
             insert.setCreateDate(now);
             insert.setUpdateDate(now);
             onXqDs(() -> {
@@ -255,12 +266,19 @@ public class XqSpecialConfigService {
             exists.setFreightRate(freight);
             exists.setApplyTo(applyTo);
             exists.setEnabled(reqVO.getEnabled() == null || reqVO.getEnabled());
+            exists.setIsDefault(isDefault);
             exists.setUpdateDate(now);
             onXqDs(() -> {
                 markupRuleMapper.updateById(exists);
                 return true;
             });
             savedId = excludeId;
+        }
+        if (isDefault) {
+            onXqDs(() -> {
+                markupRuleMapper.clearDefaultByShop(sourcePlatformId, persistShopId, savedId);
+                return true;
+            });
         }
         XqPlatformPriceMarkupRuleDO saved = onXqDs(() -> markupRuleMapper.selectById(savedId));
         return toMarkupVo(saved, storeScopeService.getPlatform(store.getPlatformId()), shopViewMap(),
@@ -604,6 +622,7 @@ public class XqSpecialConfigService {
         vo.setName(row.getName());
         vo.setEnabled(row.getEnabled());
         vo.setSkipSku(Boolean.TRUE.equals(row.getSkipSku()));
+        vo.setIsDefault(Boolean.TRUE.equals(row.getIsDefault()));
         vo.setSegments(parseSegments(row.getSegmentsJson()));
         return vo;
     }
@@ -626,6 +645,7 @@ public class XqSpecialConfigService {
         vo.setFreightRate(row.getFreightRate());
         vo.setApplyTo(row.getApplyTo());
         vo.setEnabled(row.getEnabled());
+        vo.setIsDefault(Boolean.TRUE.equals(row.getIsDefault()));
         vo.setSummary(markupSummary(row.getMode(), row.getValue(), row.getFreightRate()));
         vo.setSamplePrice(calcMarkup(new BigDecimal("100"), row.getMode(), row.getValue(), row.getFreightRate()));
         return vo;

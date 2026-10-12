@@ -22,4 +22,13 @@ public class XqRpaConfigRespVO {
     private String account;
     private Boolean hasPassword;
 
+    @Schema(description = "执行器：commander / script / exe")
+    private String runnerMode;
+    @Schema(description = "本地脚本或 exe 路径")
+    private String runnerPath;
+    @Schema(description = "附加启动参数")
+    private String runnerArgs;
+    @Schema(description = "工作目录")
+    private String runnerWorkdir;
+
 }

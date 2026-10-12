@@ -5,12 +5,15 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqImageGenRuleRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaCopyCallbackReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
-import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqRpaGlobalConfigDO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaTriggerRespVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqRpaUserConfigDO;
+import cn.iocoder.yudao.module.fms.service.xq.rpa.CommanderRpaJobLauncher;
+import cn.iocoder.yudao.module.fms.service.xq.rpa.XqRpaJobLauncherRegistry;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqGigaProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqRpaUserConfigMapper;
@@ -63,9 +66,7 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
     @Resource
     private XqRpaUserConfigMapper rpaUserConfigMapper;
     @Resource
-    private XqRpaGlobalConfigService rpaGlobalConfigService;
-    @Resource
-    private XqCommanderClient commanderClient;
+    private XqRpaConfigService rpaConfigService;
     @Lazy
     @Resource
     private XqCopyPipelineServiceImpl self;
@@ -80,17 +81,28 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
 
         Map<String, Object> input = new LinkedHashMap<>();
         // 登录类入参（与个人 RPA 配置一致，流程可选用）
-        XqRpaUserConfigDO userCfg = rpaUserConfigMapper.selectByUserId(userId);
-        if (userCfg != null) {
-            if (StrUtil.isNotBlank(userCfg.getErpSiteUrl())) {
-                input.put("http", userCfg.getErpSiteUrl().trim());
+        // 表缺 runner_mode 等列时不能拖垮详情：先容错，再靠 SQL 补齐
+        try {
+            XqRpaUserConfigDO userCfg = rpaUserConfigMapper.selectByUserId(userId);
+            if (userCfg != null) {
+                if (StrUtil.isNotBlank(userCfg.getErpSiteUrl())) {
+                    input.put("http", userCfg.getErpSiteUrl().trim());
+                }
+                if (StrUtil.isNotBlank(userCfg.getAccount())) {
+                    input.put("账户", userCfg.getAccount().trim());
+                }
+                if (StrUtil.isNotBlank(userCfg.getPassword())) {
+                    input.put("密码", userCfg.getPassword().trim());
+                }
             }
-            if (StrUtil.isNotBlank(userCfg.getAccount())) {
-                input.put("账户", userCfg.getAccount().trim());
-            }
-            if (StrUtil.isNotBlank(userCfg.getPassword())) {
-                input.put("密码", userCfg.getPassword().trim());
-            }
+        } catch (Exception ex) {
+            log.warn("[buildJobInput] 读取个人RPA配置失败 userId={} err={}", userId, ex.getMessage());
+        }
+        Long tenantId = TenantContextHolder.getTenantId();
+        if (tenantId != null) {
+            String tid = String.valueOf(tenantId);
+            input.put("租户", tid);
+            input.put("tenantId", tid);
         }
 
         input.put("pipeline", "copy_then_image_prompt");
@@ -122,10 +134,13 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (featureIndex != null) {
             input.put("featureIndex", featureIndex);
         }
-        List<String> sourceImages = parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl());
-        if (sourceImages.isEmpty()) {
-            throw exception(XQ_RPA_AI_FAIL, "任务没有参考图，无法跑文案");
+        // 批量导入的分项提示词：标题 / 卖点 / 长描述
+        Object copyPrompts = copyJson.get("copyPrompts");
+        if (copyPrompts != null) {
+            input.put("copyPrompts", copyPrompts);
         }
+        List<String> sourceImages = parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl());
+        // 详情/组包不再直接抛错：交给机器人下载步骤报「无图」；避免 HTTP 层只显示「系统异常」
         input.put("sourceImages", sourceImages);
 
         Map<String, Object> copyRulePayload = new LinkedHashMap<>();
@@ -148,7 +163,7 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                 "1.load_copy_rule: 先加载文案规则作为硬约束（字数/卖点数/标点/平台规范）",
                 "2.download_images: RPA 必须把 sourceImages 全部下到本机 Main Images（与首图识图无关）",
                 "3.vision_observe: 本机只识首图 → imageObservations（不做全套识图）",
-                "4.generate_copy: 按首图观察+原文案写标题/卖点/中文风格标签/长描述",
+                "4.generate_copy: 按首图观察+原文案+copyPrompts分项提示词写标题/卖点/中文风格标签/长描述",
                 "5.image_prompts_local: 提示词用文案本地拼，全套识图留给生图机器人"
         ));
 
@@ -195,19 +210,25 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
             throw exception(XQ_WORK_ORDER_STATUS_INVALID);
         }
-        XqRpaGlobalConfigDO global = rpaGlobalConfigService.requireConfigured();
         XqRpaUserConfigDO userCfg = rpaUserConfigMapper.selectByUserId(userId);
-        if (userCfg == null || StrUtil.isBlank(userCfg.getCopyJobUuid())) {
+        if (userCfg == null) {
             throw exception(XQ_RPA_CONFIG_INVALID);
+        }
+        String mode = XqRpaJobLauncherRegistry.normalizeMode(userCfg.getRunnerMode());
+        // 控制中枢需要 Job UUID；本地脚本/exe 用 runnerPath
+        if (CommanderRpaJobLauncher.MODE.equals(mode) && StrUtil.isBlank(userCfg.getCopyJobUuid())) {
+            throw exception(XQ_RPA_CONFIG_INVALID);
+        }
+        if (!CommanderRpaJobLauncher.MODE.equals(mode) && StrUtil.isBlank(userCfg.getRunnerPath())) {
+            throw exception(XQ_RPA_TRIGGER_FAIL, "本地执行未配置脚本/exe 路径");
         }
 
         enrichSourceIfNeeded(order);
         Map<String, Object> input = buildJobInput(order, userId);
         try {
-            Map<String, Object> result = commanderClient.triggerJob(
-                    global.getBaseUrl(), global.getAppKey(), global.getAppSecret(),
-                    userCfg.getCopyJobUuid().trim(), input);
-            String workUuid = (String) result.get("workUuid");
+            String jobUuid = StrUtil.blankToDefault(userCfg.getCopyJobUuid(), userCfg.getRunnerPath());
+            XqRpaTriggerRespVO result = rpaConfigService.launch(userId, "copy", jobUuid, input);
+            String workUuid = result == null ? null : result.getWorkUuid();
             workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
                     .eq(XqWorkOrderDO::getId, order.getId())
                     .set(XqWorkOrderDO::getRpaCopyWorkUuid, workUuid)
@@ -253,14 +274,24 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         // 未传 limit 时按扁平队列一次多拉（上限见 selectPendingCopyJobs=20），避免只领 1 条
         int n = limit == null || limit < 1 ? 20 : limit;
         List<XqWorkOrderDO> orders = workOrderMapper.selectPendingCopyJobs(userId, n);
+        if (orders.isEmpty()) {
+            long mine = workOrderMapper.selectCount(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<XqWorkOrderDO>()
+                    .eq(XqWorkOrderDO::getStatus, WORK_STATUS_DOING)
+                    .eq(XqWorkOrderDO::getAssigneeUserId, userId)
+                    .eq(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_QUEUED));
+            long anyQueued = workOrderMapper.selectCount(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<XqWorkOrderDO>()
+                    .eq(XqWorkOrderDO::getStatus, WORK_STATUS_DOING)
+                    .eq(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_QUEUED));
+            log.warn("[pullCopyJobs] empty userId={} tenantId={} queuedForAssignee={} queuedAll={}",
+                    userId, TenantContextHolder.getTenantId(), mine, anyQueued);
+        }
+        // 只返回精简 jobs（sku/workOrderId），详情由 rpa-copy-detail 再拉。
+        // 禁止在拉取阶段因无图/组包失败 continue：否则 queuedForUser>0 但 jobs=[]，机器人侧会被误判为「没识别到字段」。
         List<Map<String, Object>> jobs = new ArrayList<>();
         for (XqWorkOrderDO order : orders) {
-            enrichSourceIfNeeded(order);
-            if (parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl()).isEmpty()) {
-                workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
-                        .eq(XqWorkOrderDO::getId, order.getId())
-                        .set(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_FAIL)
-                        .set(XqWorkOrderDO::getRpaCopyError, "任务没有参考图，无法跑文案"));
+            String sku = StrUtil.blankToDefault(order.getExternalSku(), "").trim();
+            if (StrUtil.isBlank(sku)) {
+                log.warn("[pullCopyJobs] skip blank-sku id={}", order.getId());
                 continue;
             }
             workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
@@ -271,17 +302,60 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                     .set(XqWorkOrderDO::getWorkflowPhase, "copy")
                     .set(XqWorkOrderDO::getAssigneeUserId,
                             order.getAssigneeUserId() == null ? userId : order.getAssigneeUserId()));
-            try {
-                jobs.add(buildJobInput(order, userId));
-            } catch (Exception ex) {
-                workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
-                        .eq(XqWorkOrderDO::getId, order.getId())
-                        .set(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_FAIL)
-                        .set(XqWorkOrderDO::getRpaCopyError,
-                                StrUtil.maxLength(StrUtil.blankToDefault(ex.getMessage(), "组包失败"), 500)));
-            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("workOrderId", order.getId());
+            row.put("sku", sku);
+            row.put("title", order.getTitle());
+            jobs.add(row);
         }
+        log.info("[pullCopyJobs] userId={} tenantId={} matched={} returned={}",
+                userId, TenantContextHolder.getTenantId(), orders.size(), jobs.size());
         return jobs;
+    }
+
+    @Override
+    public List<Map<String, Object>> peekCopyJobs(Long userId, Integer limit) {
+        if (userId == null) {
+            throw exception(XQ_RPA_CONFIG_INVALID);
+        }
+        int n = limit == null || limit < 1 ? 20 : limit;
+        List<XqWorkOrderDO> orders = workOrderMapper.selectPendingCopyJobs(userId, n);
+        List<Map<String, Object>> jobs = new ArrayList<>();
+        for (XqWorkOrderDO order : orders) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("workOrderId", order.getId());
+            row.put("sku", order.getExternalSku());
+            row.put("title", order.getTitle());
+            row.put("copyUserId", order.getCopyUserId());
+            row.put("rpaCopyStatus", order.getRpaCopyStatus());
+            row.put("status", order.getStatus());
+            jobs.add(row);
+        }
+        log.info("[peekCopyJobs] userId={} tenantId={} matched={}",
+                userId, TenantContextHolder.getTenantId(), jobs.size());
+        return jobs;
+    }
+
+    @Override
+    public List<Map<String, Object>> peekDeskCopyJobs(Long userId, Integer limit) {
+        if (userId == null) {
+            return List.of();
+        }
+        int n = limit == null || limit < 1 ? 20 : Math.min(limit, 50);
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (XqWorkOrderDO order : workOrderMapper.selectDoingByAssignee(userId, n)) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("workOrderId", order.getId());
+            row.put("sku", order.getExternalSku());
+            row.put("parentWorkOrderId", order.getParentWorkOrderId());
+            row.put("assigneeUserId", order.getAssigneeUserId());
+            row.put("copyUserId", order.getCopyUserId());
+            row.put("rpaCopyStatus", order.getRpaCopyStatus());
+            row.put("status", order.getStatus());
+            rows.add(row);
+        }
+        log.info("[peekDeskCopyJobs] userId={} size={}", userId, rows.size());
+        return rows;
     }
 
     @Override
@@ -362,6 +436,14 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         copyResult.remove("revisionPrompt");
         copyResult.remove("target");
         copyResult.remove("featureIndex");
+        // 保留工作台写入的分项提示词，避免回调覆盖后丢失
+        if (!copyResult.containsKey("copyPrompts")) {
+            JSONObject prev = parseCopyResultJson(order.getCopyResultJson());
+            Object kept = prev.get("copyPrompts");
+            if (kept != null) {
+                copyResult.put("copyPrompts", kept);
+            }
+        }
         Object hs = copyResult.get("highlightStyle");
         if (hs instanceof String s && s.equals(description)) {
             copyResult.remove("highlightStyle");
@@ -396,14 +478,23 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                 done.set(XqWorkOrderDO::getCoverUrl, promptUrls.get(0));
             }
         }
-        int updated = workOrderMapper.update(null, done);
+        int updated;
+        try {
+            updated = workOrderMapper.update(null, done);
+        } catch (Exception ex) {
+            // 常见：content_selling_points 过短（历史 varchar(1024)）导致整单回滚，前端一直「生成中」
+            log.warn("[rpa-copy-callback] 落库异常 workOrderId={} sellingLen={} titleLen={} err={}",
+                    order.getId(), StrUtil.length(selling), StrUtil.length(title), ex.getMessage());
+            throw exception(XQ_RPA_TRIGGER_FAIL,
+                    "回调落库失败：" + StrUtil.maxLength(StrUtil.blankToDefault(ex.getMessage(), "db error"), 200));
+        }
         if (updated <= 0) {
             log.warn("[rpa-copy-callback] 更新 0 行 workOrderId={} status={}",
                     order.getId(), order.getRpaCopyStatus());
             throw exception(XQ_RPA_TRIGGER_FAIL, "回调落库失败：工单未更新 id=" + order.getId());
         }
-        log.info("[rpa-copy-callback] ok workOrderId={} sku={} titleLen={}",
-                order.getId(), order.getExternalSku(), StrUtil.length(title));
+        log.info("[rpa-copy-callback] ok workOrderId={} sku={} titleLen={} sellingLen={}",
+                order.getId(), order.getExternalSku(), StrUtil.length(title), StrUtil.length(selling));
 
         // 主体成功后：未勾选独立 RPA 的变体沿用主体文案
         if (order.getParentWorkOrderId() == null) {
@@ -438,7 +529,13 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         }
     }
 
-    /** 下发后补齐原文案/原图；生成前再兜底一次。原图若只有封面也会用 Giga/父单/家族全量图补齐。 */
+    /**
+     * 下发后补齐原文案/原图；生成前再兜底一次。
+     * <p>
+     * 原图只取「本 SKU」在 Giga 的图集，禁止合并父工单/家族其它变体图
+     * （否则会出现粉/白等其它颜色混进当前变体原图区）。
+     * 若本 SKU 有完整图集而工单里被历史逻辑污染，会纠正回本 SKU。
+     */
     public void enrichSourceIfNeeded(XqWorkOrderDO order) {
         if (order == null || order.getId() == null) {
             return;
@@ -447,44 +544,11 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         List<String> currentImages = parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl());
         XqGigaProductRow row = self.readGigaProduct(order.getGigaProductId(), order.getExternalSku());
 
-        // 候选全量图：本 SKU Giga → 父工单 → 家族主 SKU Giga（变体常只有封面）
-        LinkedHashSet<String> candidate = new LinkedHashSet<>();
-        if (row != null) {
-            candidate.addAll(parseImageUrls(row.getImageUrlsJson(), row.getImageUrl()));
-        }
-        if (order.getParentWorkOrderId() != null) {
-            XqWorkOrderDO parent = workOrderMapper.selectById(order.getParentWorkOrderId());
-            if (parent != null) {
-                candidate.addAll(parseImageUrls(parent.getSourceImageUrls(), parent.getCoverUrl()));
-                if (candidate.size() <= 1) {
-                    XqGigaProductRow parentGiga = self.readGigaProduct(
-                            parent.getGigaProductId(), parent.getExternalSku());
-                    if (parentGiga != null) {
-                        candidate.addAll(parseImageUrls(
-                                parentGiga.getImageUrlsJson(), parentGiga.getImageUrl()));
-                    }
-                }
-            }
-        }
-        if (candidate.size() <= 1 && row != null && StrUtil.isNotBlank(row.getFamilySku())
-                && !StrUtil.equalsIgnoreCase(row.getFamilySku(), order.getExternalSku())) {
-            XqGigaProductRow family = self.readGigaProduct(null, row.getFamilySku());
-            if (family != null) {
-                candidate.addAll(parseImageUrls(family.getImageUrlsJson(), family.getImageUrl()));
-            }
-        }
-        if (candidate.size() <= 1 && StrUtil.isNotBlank(order.getParentSku())
-                && !StrUtil.equalsIgnoreCase(order.getParentSku(), order.getExternalSku())) {
-            XqGigaProductRow parentSkuGiga = self.readGigaProduct(null, order.getParentSku());
-            if (parentSkuGiga != null) {
-                candidate.addAll(parseImageUrls(
-                        parentSkuGiga.getImageUrlsJson(), parentSkuGiga.getImageUrl()));
-            }
-        }
-
-        List<String> gigaImages = new ArrayList<>(candidate);
-        boolean needImages = currentImages.isEmpty()
-                || (!gigaImages.isEmpty() && gigaImages.size() > currentImages.size());
+        List<String> selfImages = row == null
+                ? List.of()
+                : parseImageUrls(row.getImageUrlsJson(), row.getImageUrl());
+        // 仅本 SKU：有图则以其为准；无图则不拉父/家族，避免串变体
+        boolean needImages = !selfImages.isEmpty() && !sameUrlList(currentImages, selfImages);
         if (row == null && !needDesc && !needImages) {
             return;
         }
@@ -501,15 +565,18 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
             order.setSourceDescription(row.getDescription());
             changed = true;
         }
-        if (needImages && !gigaImages.isEmpty()) {
-            // 合并：以候选全量为主，再保留工单已有 URL
-            LinkedHashSet<String> merged = new LinkedHashSet<>(gigaImages);
-            merged.addAll(currentImages);
-            List<String> urls = new ArrayList<>(merged);
+        if (needImages) {
+            List<String> urls = new ArrayList<>(selfImages);
             String json = JSONUtil.toJsonStr(urls);
             uw.set(XqWorkOrderDO::getSourceImageUrls, json);
             order.setSourceImageUrls(json);
-            if (StrUtil.isBlank(order.getCoverUrl())) {
+            // 封面优先用本 SKU 主图
+            String selfCover = StrUtil.blankToDefault(row.getImageUrl(), urls.get(0));
+            if (StrUtil.isNotBlank(selfCover)
+                    && !StrUtil.equals(selfCover, order.getCoverUrl())) {
+                uw.set(XqWorkOrderDO::getCoverUrl, selfCover);
+                order.setCoverUrl(selfCover);
+            } else if (StrUtil.isBlank(order.getCoverUrl())) {
                 uw.set(XqWorkOrderDO::getCoverUrl, urls.get(0));
                 order.setCoverUrl(urls.get(0));
             }
@@ -523,6 +590,21 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (changed) {
             workOrderMapper.update(null, uw);
         }
+    }
+
+    private static boolean sameUrlList(List<String> a, List<String> b) {
+        if (a == null || b == null) {
+            return a == b;
+        }
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (int i = 0; i < a.size(); i++) {
+            if (!StrUtil.equals(a.get(i), b.get(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override

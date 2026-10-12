@@ -32,6 +32,8 @@ public class XqCategoryFieldTemplateRespVO {
         private String groupLabel;
         private String bandLabel;
         private String valuesList;
+        /** 解析后的枚举选项（默认值下拉） */
+        private List<EnumOption> options = new ArrayList<>();
         /** 该类目配置的字段默认值 */
         private String defaultValue;
         /** 该类目配置的 AI/商品映射，如 ai_title */
@@ -40,6 +42,16 @@ public class XqCategoryFieldTemplateRespVO {
         private String zone;
         /** 该字段出现在多少个原分类模板中 */
         private Integer sourceCount;
+        /** 店铺配置：固定字段 */
+        private Boolean fixed;
+        /** 店铺配置：字段备注 */
+        private String remark;
+    }
+
+    @Data
+    public static class EnumOption {
+        private String value;
+        private String label;
     }
 
 }

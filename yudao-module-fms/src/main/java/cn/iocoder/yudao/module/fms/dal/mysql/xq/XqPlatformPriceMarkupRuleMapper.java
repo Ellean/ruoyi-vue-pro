@@ -30,4 +30,17 @@ public interface XqPlatformPriceMarkupRuleMapper extends BaseMapperX<XqPlatformP
                 .last("LIMIT 1"));
     }
 
+    /** 同店铺取消其它默认（保留 excludeId） */
+    default void clearDefaultByShop(String platformId, String shopId, String excludeId) {
+        List<XqPlatformPriceMarkupRuleDO> rows = selectList(new LambdaQueryWrapperX<XqPlatformPriceMarkupRuleDO>()
+                .eq(XqPlatformPriceMarkupRuleDO::getPlatformId, platformId)
+                .eq(XqPlatformPriceMarkupRuleDO::getShopId, shopId)
+                .eq(XqPlatformPriceMarkupRuleDO::getIsDefault, true)
+                .ne(excludeId != null && !excludeId.isEmpty(), XqPlatformPriceMarkupRuleDO::getId, excludeId));
+        for (XqPlatformPriceMarkupRuleDO row : rows) {
+            row.setIsDefault(false);
+            updateById(row);
+        }
+    }
+
 }

@@ -22,10 +22,14 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderR
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaImageCallbackReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaImagePullReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaImagePullRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReviseImageReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReviseImageRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReviseImageTaskVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 import cn.iocoder.yudao.module.fms.service.xq.XqCopyPipelineService;
 import cn.iocoder.yudao.module.fms.service.xq.XqImagePipelineService;
+import cn.iocoder.yudao.module.fms.service.xq.XqImageReviseAsyncService;
 import cn.iocoder.yudao.module.fms.service.xq.XqWorkOrderService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -54,6 +58,8 @@ public class XqWorkOrderController {
     private XqCopyPipelineService copyPipelineService;
     @Resource
     private XqImagePipelineService imagePipelineService;
+    @Resource
+    private XqImageReviseAsyncService imageReviseAsyncService;
 
     @GetMapping("/page")
     @Operation(summary = "工作台任务分页")
@@ -153,10 +159,22 @@ public class XqWorkOrderController {
     public CommonResult<XqWorkOrderRpaCopyPullRespVO> rpaCopyPull(
             @RequestBody(required = false) XqWorkOrderRpaCopyPullReqVO reqVO) {
         Integer limit = reqVO == null ? null : reqVO.getLimit();
-        List<java.util.Map<String, Object>> jobs = copyPipelineService.pullCopyJobs(getLoginUserId(), limit);
+        boolean dryRun = reqVO != null && Boolean.TRUE.equals(reqVO.getDryRun());
+        Long userId = getLoginUserId();
+        List<java.util.Map<String, Object>> jobs = dryRun
+                ? copyPipelineService.peekCopyJobs(userId, limit)
+                : copyPipelineService.pullCopyJobs(userId, limit);
         XqWorkOrderRpaCopyPullRespVO resp = new XqWorkOrderRpaCopyPullRespVO();
         resp.setJobs(jobs);
         resp.setCount(jobs.size());
+        resp.setLoginUserId(userId);
+        resp.setTenantId(cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder.getTenantId());
+        resp.setQueuedForUser(workOrderService.countQueuedCopyForUser(userId));
+        resp.setQueuedOnDesk(workOrderService.countQueuedCopyOnDesk(userId));
+        resp.setQueuedAll(workOrderService.countQueuedCopyAll());
+        if (dryRun) {
+            resp.setDeskSample(copyPipelineService.peekDeskCopyJobs(userId, 30));
+        }
         return success(resp);
     }
 
@@ -209,6 +227,23 @@ public class XqWorkOrderController {
         return success(workOrderService.listWorkOrder(reqVO));
     }
 
+    @PostMapping("/listing-export")
+    @Operation(summary = "导表上架：生成 Excel 并进入待确认")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:list', 'xq:work-order:complete')")
+    public void listingExport(@Valid @RequestBody XqWorkOrderListReqVO reqVO,
+                              jakarta.servlet.http.HttpServletResponse response) throws java.io.IOException {
+        var exported = workOrderService.exportListing(reqVO);
+        response.setContentType(exported.getContentType());
+        response.setHeader("Content-Disposition",
+                "attachment; filename*=UTF-8''"
+                        + java.net.URLEncoder.encode(exported.getFilename(), java.nio.charset.StandardCharsets.UTF_8)
+                        .replace("+", "%20"));
+        response.setHeader("X-Export-Filename", exported.getFilename());
+        response.setHeader("X-Export-Product-Count", String.valueOf(exported.getProductCount()));
+        response.getOutputStream().write(exported.getBytes());
+        response.getOutputStream().flush();
+    }
+
     @PostMapping("/confirm-listing")
     @Operation(summary = "导表上架：用户确认已上架")
     @Parameter(name = "id", description = "任务编号", required = true)
@@ -220,21 +255,46 @@ public class XqWorkOrderController {
     @PostMapping("/generate-image")
     @Operation(summary = "入队生图 RPA（由美工本机机器人拉取执行）")
     @Parameter(name = "id", description = "任务编号", required = true)
-    @PreAuthorize("@ss.hasPermission('xq:work-order:gen-image')")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:gen-image', 'xq:work-order:my-image')")
     public CommonResult<XqWorkOrderRespVO> generateImage(@RequestParam("id") Long id) {
         return success(BeanUtils.toBean(
                 workOrderService.generateImage(id, getLoginUserId()), XqWorkOrderRespVO.class));
     }
 
     @PostMapping("/enqueue-image-rpa")
-    @Operation(summary = "批量入队生图 RPA")
-    @PreAuthorize("@ss.hasPermission('xq:work-order:gen-image')")
+    @Operation(summary = "批量入队生图 RPA（入队到任务已分配美工，由其本机机器人拉取）")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:gen-image', 'xq:work-order:my-image')")
     public CommonResult<Integer> enqueueImageRpa(@Valid @RequestBody XqWorkOrderBatchIdsReqVO reqVO) {
         return success(workOrderService.enqueueImageRpa(reqVO, getLoginUserId()));
     }
 
+    @PostMapping("/revise-image-preview")
+    @Operation(summary = "单图 AI 改图预览（同步；优先用 submit）")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:gen-image', 'xq:work-order:my-image', 'xq:work-order:update')")
+    public CommonResult<XqWorkOrderReviseImageRespVO> reviseImagePreview(
+            @Valid @RequestBody XqWorkOrderReviseImageReqVO reqVO) {
+        return success(workOrderService.reviseImagePreview(reqVO, getLoginUserId()));
+    }
+
+    @PostMapping("/revise-image-preview/submit")
+    @Operation(summary = "单图 AI 改图：提交后台任务，立即返回 taskId")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:gen-image', 'xq:work-order:my-image', 'xq:work-order:update')")
+    public CommonResult<XqWorkOrderReviseImageTaskVO> submitReviseImagePreview(
+            @Valid @RequestBody XqWorkOrderReviseImageReqVO reqVO) {
+        // 主 API 有界线程池过渡；HTTP 不阻塞。长期迁独立 worker
+        return success(imageReviseAsyncService.submit(reqVO, getLoginUserId()));
+    }
+
+    @GetMapping("/revise-image-preview/task")
+    @Operation(summary = "查询单图改图后台任务")
+    @Parameter(name = "taskId", description = "任务 ID", required = true)
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:gen-image', 'xq:work-order:my-image', 'xq:work-order:update')")
+    public CommonResult<XqWorkOrderReviseImageTaskVO> getReviseImageTask(@RequestParam("taskId") String taskId) {
+        return success(imageReviseAsyncService.get(taskId, getLoginUserId()));
+    }
+
     @PostMapping("/rpa-image-pull")
-    @Operation(summary = "RPA：按当前登录美工领取待跑生图 SKU")
+    @Operation(summary = "RPA：运营/美工领取待跑生图（执行记录用运营个人 RPA 配置）")
     @PreAuthorize("@ss.hasPermission('xq:work-order:query')")
     public CommonResult<XqWorkOrderRpaImagePullRespVO> rpaImagePull(
             @RequestBody(required = false) XqWorkOrderRpaImagePullReqVO reqVO) {

@@ -20,5 +20,6 @@ public class XqSkuRuleSaveReqVO {
     private String name;
     private Boolean enabled;
     private Boolean skipSku;
+    private Boolean isDefault;
     private List<Map<String, Object>> segments = new ArrayList<>();
 }

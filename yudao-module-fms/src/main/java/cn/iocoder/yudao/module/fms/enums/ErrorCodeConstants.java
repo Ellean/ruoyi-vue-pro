@@ -199,6 +199,7 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_WORK_ORDER_COPY_REQUIRED = new ErrorCode(1_052_200_024, "请先完成文案，再生成图片");
     ErrorCode XQ_WORK_ORDER_IMAGE_REQUIRED = new ErrorCode(1_052_200_025, "请先完成图片，再上架");
     ErrorCode XQ_WORK_ORDER_IMAGE_STATUS_INVALID = new ErrorCode(1_052_200_028, "图片状态不合法");
+    ErrorCode XQ_WORK_ORDER_REJECT_REASON_REQUIRED = new ErrorCode(1_052_200_079, "驳回时请填写原因");
     ErrorCode XQ_WORK_ORDER_NOT_ASSIGNED_IMAGE = new ErrorCode(1_052_200_029, "请先分配美工");
     ErrorCode XQ_WORK_ORDER_IMAGE_USER_INVALID = new ErrorCode(1_052_200_035, "只能分配给拥有图片作业权限的用户或自己");
     ErrorCode XQ_DISPATCH_LISTING_REQUIRED = new ErrorCode(1_052_200_026, "请先选择上架平台与平台分类");
@@ -230,5 +231,11 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_MARKUP_RULE_DUPLICATE = new ErrorCode(1_052_200_076, "该店铺下已有对应运营的价格增幅规则，请直接编辑");
     ErrorCode XQ_UPC_RULE_DUPLICATE = new ErrorCode(1_052_200_077, "该平台已有通用 UPC 规则，请直接编辑");
     ErrorCode XQ_WORK_ORDER_ACCESS_DENIED = new ErrorCode(1_052_200_078, "无权查看或操作该任务，产品已绑定其他账号");
+    ErrorCode XQ_LISTING_CREDENTIAL_NOT_EXISTS = new ErrorCode(1_052_200_080, "上架平台密钥不存在");
+    ErrorCode XQ_LISTING_CREDENTIAL_REQUIRED = new ErrorCode(1_052_200_081, "请先配置或同步上架平台密钥");
+    ErrorCode XQ_LISTING_MODE_MISMATCH = new ErrorCode(1_052_200_082, "当前平台上架方式为 {}，请使用对应入口");
+    ErrorCode XQ_LISTING_TEMPLATE_MISSING = new ErrorCode(1_052_200_083, "未找到上架导出模板或原始 Excel：{}");
+    ErrorCode XQ_LISTING_EXPORT_FAIL = new ErrorCode(1_052_200_084, "上架导表失败：{}");
+    ErrorCode XQ_LISTING_API_FAIL = new ErrorCode(1_052_200_085, "平台 API 上架失败：{}");
 
 }

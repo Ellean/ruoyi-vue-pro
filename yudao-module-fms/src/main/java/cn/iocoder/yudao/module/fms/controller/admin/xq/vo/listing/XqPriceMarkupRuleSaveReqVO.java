@@ -20,4 +20,5 @@ public class XqPriceMarkupRuleSaveReqVO {
     /** dropship / pickup / both */
     private String applyTo;
     private Boolean enabled;
+    private Boolean isDefault;
 }

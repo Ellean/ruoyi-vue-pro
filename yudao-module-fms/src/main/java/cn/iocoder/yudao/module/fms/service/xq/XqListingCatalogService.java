@@ -28,6 +28,7 @@ import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingFieldCommonDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingFieldPoolDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingFieldSpecialDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingShopFieldConfigDO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingValuesListDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingCategoryDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingPlatformDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqPlatformDO;
@@ -40,6 +41,7 @@ import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingFieldCommonMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingFieldPoolMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingFieldSpecialMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingShopFieldConfigMapper;
+import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingValuesListMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingCategoryMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingPlatformMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqPlatformMapper;
@@ -51,6 +53,7 @@ import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -90,11 +93,15 @@ public class XqListingCatalogService {
     @Resource
     private XqListingFieldSpecialMapper listingFieldSpecialMapper;
     @Resource
+    private XqListingValuesListMapper listingValuesListMapper;
+    @Resource
     private XqCopyGenRuleMapper copyGenRuleMapper;
     @Resource
     private XqImageGenRuleMapper imageGenRuleMapper;
     @Resource
     private XqStoreScopeService storeScopeService;
+    @Resource
+    private XqListingModeHelper listingModeHelper;
 
     /** 业务平台：xq_platform.id；有绑店白名单时只返回可见店铺所属平台 */
     public List<XqListingPlatformRespVO> listPlatforms() {
@@ -121,6 +128,11 @@ public class XqListingCatalogService {
             vo.setName(p.getName());
             vo.setSortOrder(p.getSort());
             vo.setEnabled(p.getEnabled());
+            XqListingModeHelper.PlatformListingMeta meta =
+                    listingModeHelper.resolveByBusinessPlatformId(String.valueOf(p.getId()));
+            vo.setCatalogSource(meta.catalogSource());
+            vo.setListingMode(meta.listingMode());
+            vo.setSourcePlatformId(meta.sourcePlatformId());
             out.add(vo);
         }
         return out;
@@ -240,6 +252,14 @@ public class XqListingCatalogService {
             vo = toCategoryFieldTemplateVo(row, hitCategoryName);
             vo.setCategoryId(categoryId);
         }
+        Set<String> templatePlatformIds = new HashSet<>();
+        if (row != null && StrUtil.isNotBlank(row.getPlatformId())) {
+            templatePlatformIds.add(row.getPlatformId().trim());
+        }
+        if (StrUtil.isNotBlank(vo.getPlatformId())) {
+            templatePlatformIds.add(vo.getPlatformId().trim());
+        }
+        enrichFieldEnumOptions(vo.getFields(), templatePlatformIds);
         applyFieldConfig(vo, categoryId);
         return vo;
     }
@@ -313,6 +333,14 @@ public class XqListingCatalogService {
                 f.setGroupLabel(group);
                 f.setBandLabel("special".equalsIgnoreCase(source) ? "特殊" : "固定");
                 f.setValuesList(StrUtil.blankToDefault(field.getStr("valuesList"), ""));
+                List<XqCategoryFieldTemplateRespVO.EnumOption> opts =
+                        parseEnumOptions(field.get("options"));
+                if (opts.isEmpty()) {
+                    opts = parseInlineEnumText(f.getValuesList());
+                }
+                if (!opts.isEmpty()) {
+                    f.setOptions(opts);
+                }
                 vo.getFields().add(f);
             }
         }
@@ -613,6 +641,7 @@ public class XqListingCatalogService {
         }
         out.setRequiredCount(required);
         out.setTotal(fields.size());
+        enrichFieldEnumOptions(fields, templatePlatformIds);
         XqShopFieldConfigRespVO cfg = getShopFieldConfig(platformId, shopId, country);
         Map<String, XqShopFieldConfigRespVO.Item> overlay = new HashMap<>();
         if (cfg.getFields() != null) {
@@ -632,11 +661,15 @@ public class XqListingCatalogService {
                 field.setDefaultValue(item.getDefaultValue());
                 field.setValueSource(item.getValueSource());
                 field.setZone(normalizeFieldZone(item.getZone()));
-                if (item.getRequired() != null) {
-                    field.setRequired(item.getRequired());
-                    field.setGroupLabel(Boolean.TRUE.equals(item.getRequired()) ? "必填" : "选填");
-                    field.setRequirementLevel(
-                            Boolean.TRUE.equals(item.getRequired()) ? "REQUIRED" : "OPTIONAL");
+                // remark / fixed / groupLabel 仅作展示标记，不覆盖平台 required、不加只读
+                field.setRemark(StrUtil.blankToDefault(item.getRemark(), ""));
+                if (item.getFixed() != null) {
+                    field.setFixed(item.getFixed());
+                }
+                if (StrUtil.isNotBlank(item.getGroupLabel())) {
+                    field.setGroupLabel(item.getGroupLabel().trim());
+                } else if (Boolean.TRUE.equals(item.getFixed())) {
+                    field.setGroupLabel("固定");
                 }
             }
             if (StrUtil.isBlank(field.getZone()) && !anySavedZone) {
@@ -751,7 +784,218 @@ public class XqListingCatalogService {
             sourceCount = Math.max(1, json.getJSONArray("categoryIds").size());
         }
         f.setSourceCount(sourceCount);
+        if (json != null) {
+            List<XqCategoryFieldTemplateRespVO.EnumOption> fromJson = parseEnumOptions(json.get("options"));
+            if (fromJson.isEmpty()) {
+                fromJson = parseEnumOptions(json.get("authorized_values"));
+            }
+            if (fromJson.isEmpty()) {
+                fromJson = parseEnumOptions(json.get("authorizedValues"));
+            }
+            if (fromJson.isEmpty()) {
+                fromJson = parseEnumOptions(json.get("values"));
+            }
+            if (!fromJson.isEmpty()) {
+                f.setOptions(fromJson);
+            }
+        }
         return f;
+    }
+
+    /**
+     * 把模板枚举映射到字段 options：fieldJson.options → values_list 表 → BOOLEAN 兜底。
+     */
+    private void enrichFieldEnumOptions(
+            List<XqCategoryFieldTemplateRespVO.Field> fields, Set<String> platformIds) {
+        if (fields == null || fields.isEmpty()) {
+            return;
+        }
+        Set<String> needCodes = new HashSet<>();
+        for (XqCategoryFieldTemplateRespVO.Field field : fields) {
+            if (field == null) {
+                continue;
+            }
+            if (field.getOptions() != null && !field.getOptions().isEmpty()) {
+                continue;
+            }
+            String listCode = StrUtil.blankToDefault(field.getValuesList(), "").trim();
+            if (StrUtil.isNotBlank(listCode) && !looksLikeInlineEnumText(listCode)) {
+                needCodes.add(listCode);
+            }
+        }
+        Map<String, List<XqCategoryFieldTemplateRespVO.EnumOption>> byList = new HashMap<>();
+        if (!needCodes.isEmpty() && platformIds != null && !platformIds.isEmpty()) {
+            List<XqListingValuesListDO> rows = onXqDs(
+                    () -> listingValuesListMapper.selectByPlatformIdsAndCodes(platformIds, needCodes));
+            for (XqListingValuesListDO row : rows) {
+                if (row == null || StrUtil.isBlank(row.getListCode())) {
+                    continue;
+                }
+                List<XqCategoryFieldTemplateRespVO.EnumOption> opts =
+                        parseEnumOptions(parseJsonArraySafe(row.getValuesJson()));
+                if (!opts.isEmpty()) {
+                    byList.put(row.getListCode().trim(), opts);
+                }
+            }
+        }
+        for (XqCategoryFieldTemplateRespVO.Field field : fields) {
+            if (field == null) {
+                continue;
+            }
+            if (field.getOptions() != null && !field.getOptions().isEmpty()) {
+                continue;
+            }
+            String listCode = StrUtil.blankToDefault(field.getValuesList(), "").trim();
+            List<XqCategoryFieldTemplateRespVO.EnumOption> opts = byList.get(listCode);
+            if (opts == null || opts.isEmpty()) {
+                opts = parseInlineEnumText(listCode);
+            }
+            if ((opts == null || opts.isEmpty()) && isBooleanFieldType(field.getType())) {
+                opts = booleanEnumOptions();
+            }
+            if (opts != null && !opts.isEmpty()) {
+                field.setOptions(opts);
+            }
+        }
+    }
+
+    private static boolean isBooleanFieldType(String type) {
+        String t = StrUtil.blankToDefault(type, "").trim().toUpperCase();
+        return "BOOLEAN".equals(t) || "BOOL".equals(t) || t.contains("BOOLEAN");
+    }
+
+    private static List<XqCategoryFieldTemplateRespVO.EnumOption> booleanEnumOptions() {
+        List<XqCategoryFieldTemplateRespVO.EnumOption> out = new ArrayList<>(2);
+        out.add(enumOption("Yes", "Yes"));
+        out.add(enumOption("No", "No"));
+        return out;
+    }
+
+    private static boolean looksLikeInlineEnumText(String raw) {
+        return raw.contains("|") || raw.contains(";") || raw.contains(",")
+                || raw.startsWith("[") || raw.startsWith("{");
+    }
+
+    private static List<XqCategoryFieldTemplateRespVO.EnumOption> parseInlineEnumText(String raw) {
+        String text = StrUtil.blankToDefault(raw, "").trim();
+        if (StrUtil.isBlank(text)) {
+            return List.of();
+        }
+        if (text.startsWith("[") || text.startsWith("{")) {
+            try {
+                Object parsed = JSONUtil.parse(text);
+                return parseEnumOptions(parsed);
+            } catch (Exception ignored) {
+                // fall through
+            }
+        }
+        if (!looksLikeInlineEnumText(text)) {
+            return List.of();
+        }
+        String[] parts = text.split("[,|;，、]+");
+        List<XqCategoryFieldTemplateRespVO.EnumOption> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (String part : parts) {
+            String v = StrUtil.blankToDefault(part, "").trim();
+            if (StrUtil.isBlank(v) || !seen.add(v.toLowerCase())) {
+                continue;
+            }
+            out.add(enumOption(v, v));
+            if (out.size() >= 800) {
+                break;
+            }
+        }
+        return out;
+    }
+
+    private static Object parseJsonArraySafe(String raw) {
+        if (StrUtil.isBlank(raw)) {
+            return null;
+        }
+        try {
+            return JSONUtil.parse(raw);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static List<XqCategoryFieldTemplateRespVO.EnumOption> parseEnumOptions(Object raw) {
+        List<XqCategoryFieldTemplateRespVO.EnumOption> out = new ArrayList<>();
+        if (raw == null) {
+            return out;
+        }
+        JSONArray arr;
+        try {
+            if (raw instanceof JSONArray ja) {
+                arr = ja;
+            } else if (raw instanceof Collection<?> col) {
+                arr = JSONUtil.parseArray(col);
+            } else if (raw instanceof CharSequence) {
+                arr = JSONUtil.parseArray(String.valueOf(raw));
+            } else {
+                arr = JSONUtil.parseArray(raw);
+            }
+        } catch (Exception ignored) {
+            return out;
+        }
+        Set<String> seen = new HashSet<>();
+        for (Object item : arr) {
+            if (out.size() >= 800) {
+                break;
+            }
+            if (item == null) {
+                continue;
+            }
+            String value;
+            String label;
+            if (item instanceof CharSequence || item instanceof Number) {
+                value = String.valueOf(item).trim();
+                label = value;
+            } else {
+                JSONObject obj;
+                try {
+                    obj = JSONUtil.parseObj(item);
+                } catch (Exception ignored) {
+                    continue;
+                }
+                value = StrUtil.blankToDefault(
+                        obj.getStr("value", obj.getStr("code", obj.getStr("id"))), "").trim();
+                label = StrUtil.blankToDefault(
+                        obj.getStr("label", obj.getStr("name", value)), value).trim();
+                if (StrUtil.isBlank(value)) {
+                    value = label;
+                }
+            }
+            if (StrUtil.isBlank(value)) {
+                continue;
+            }
+            String key = value.toLowerCase();
+            if (!seen.add(key)) {
+                continue;
+            }
+            out.add(enumOption(value, mappedEnumLabel(value, StrUtil.blankToDefault(label, value))));
+        }
+        return out;
+    }
+
+    /** 提交用 code；展示拼名称，如 (100) WHITE */
+    private static String mappedEnumLabel(String value, String label) {
+        String v = StrUtil.blankToDefault(value, "").trim();
+        String l = StrUtil.blankToDefault(label, v).trim();
+        if (StrUtil.isBlank(v) || v.equals(l)) {
+            return l;
+        }
+        if (l.contains("(" + v + ")") || l.startsWith(v + " ") || l.startsWith(v + ")")) {
+            return l;
+        }
+        return "(" + v + ") " + l;
+    }
+
+    private static XqCategoryFieldTemplateRespVO.EnumOption enumOption(String value, String label) {
+        XqCategoryFieldTemplateRespVO.EnumOption opt = new XqCategoryFieldTemplateRespVO.EnumOption();
+        opt.setValue(value);
+        opt.setLabel(label);
+        return opt;
     }
 
     private boolean isAmazonLike(String platformId) {
@@ -858,8 +1102,13 @@ public class XqListingCatalogService {
             String def = StrUtil.blankToDefault(item.getDefaultValue(), "");
             String src = StrUtil.blankToDefault(item.getValueSource(), "");
             String zone = normalizeFieldZone(item.getZone());
+            String remark = StrUtil.blankToDefault(item.getRemark(), "");
+            String groupLabel = StrUtil.blankToDefault(item.getGroupLabel(), "");
             Boolean required = item.getRequired();
-            if (StrUtil.isBlank(def) && StrUtil.isBlank(src) && StrUtil.isBlank(zone) && required == null) {
+            Boolean fixed = item.getFixed();
+            if (StrUtil.isBlank(def) && StrUtil.isBlank(src) && StrUtil.isBlank(zone)
+                    && StrUtil.isBlank(remark) && StrUtil.isBlank(groupLabel)
+                    && required == null && fixed == null) {
                 continue;
             }
             JSONObject obj = new JSONObject();
@@ -867,8 +1116,13 @@ public class XqListingCatalogService {
             obj.set("defaultValue", def);
             obj.set("valueSource", src);
             obj.set("zone", zone);
+            obj.set("remark", remark);
+            obj.set("groupLabel", groupLabel);
             if (required != null) {
                 obj.set("required", required);
+            }
+            if (fixed != null) {
+                obj.set("fixed", fixed);
             }
             fieldArr.add(obj);
         }
@@ -916,9 +1170,10 @@ public class XqListingCatalogService {
     private static List<XqShopFieldConfigRespVO.Partition> ensureSystemPartitions(
             List<XqShopFieldConfigRespVO.Partition> raw) {
         Map<String, XqShopFieldConfigRespVO.Partition> map = new java.util.LinkedHashMap<>();
-        map.put("copy", systemPartition("copy", "描述", "title,description,bullet,卖点,长描述", "#2563eb"));
-        map.put("product", systemPartition("product", "产品", "sku,upc,gtin,inventory,库存,color", "#059669"));
-        map.put("attr", systemPartition("attr", "属性", "length,width,height,weight,brand,material,尺寸", "#d97706"));
+        map.put("copy", systemPartition("copy", "产品文案", "title,description,bullet,卖点,长描述", "#2563eb"));
+        map.put("product", systemPartition("product", "产品基本信息", "sku,upc,gtin,inventory,库存,color", "#059669"));
+        map.put("attr", systemPartition("attr", "产品规格", "length,width,height,weight,brand,material,尺寸", "#d97706"));
+        map.put("other", systemPartition("other", "其他属性", "", "#94a3b8"));
         if (raw != null) {
             for (XqShopFieldConfigRespVO.Partition p : raw) {
                 if (p == null || StrUtil.isBlank(p.getId())) {
@@ -929,9 +1184,16 @@ public class XqListingCatalogService {
                     continue;
                 }
                 if (map.containsKey(id) && Boolean.TRUE.equals(map.get(id).getSystem())) {
+                    // 系统分组允许改名/改色/改关键词，禁止删除（始终保留在 map）
                     XqShopFieldConfigRespVO.Partition sys = map.get(id);
                     if (StrUtil.isNotBlank(p.getKeywords())) {
                         sys.setKeywords(p.getKeywords());
+                    }
+                    if (StrUtil.isNotBlank(p.getName())) {
+                        sys.setName(p.getName().trim());
+                    }
+                    if (StrUtil.isNotBlank(p.getColor())) {
+                        sys.setColor(p.getColor());
                     }
                     continue;
                 }
@@ -943,7 +1205,20 @@ public class XqListingCatalogService {
                 map.put(id, p);
             }
         }
-        return new ArrayList<>(map.values());
+        // other 始终置尾，避免插在自定义分组中间
+        List<XqShopFieldConfigRespVO.Partition> ordered = new ArrayList<>();
+        for (String id : List.of("copy", "product", "attr")) {
+            XqShopFieldConfigRespVO.Partition sys = map.remove(id);
+            if (sys != null) {
+                ordered.add(sys);
+            }
+        }
+        XqShopFieldConfigRespVO.Partition other = map.remove("other");
+        ordered.addAll(map.values());
+        if (other != null) {
+            ordered.add(other);
+        }
+        return ordered;
     }
 
     private static XqShopFieldConfigRespVO.Partition systemPartition(
@@ -975,8 +1250,13 @@ public class XqListingCatalogService {
                 item.setDefaultValue(obj.getStr("defaultValue"));
                 item.setValueSource(obj.getStr("valueSource"));
                 item.setZone(normalizeFieldZone(obj.getStr("zone")));
+                item.setRemark(StrUtil.blankToDefault(obj.getStr("remark"), ""));
+                item.setGroupLabel(StrUtil.blankToDefault(obj.getStr("groupLabel"), ""));
                 if (obj.containsKey("required")) {
                     item.setRequired(obj.getBool("required"));
+                }
+                if (obj.containsKey("fixed")) {
+                    item.setFixed(obj.getBool("fixed"));
                 }
                 map.put(code, item);
             }

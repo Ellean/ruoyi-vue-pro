@@ -235,6 +235,17 @@
                 </foreach>
             )
         </if>
+        <if test="excludeSkus != null and excludeSkus.size() &gt; 0">
+            AND NOT EXISTS (
+              SELECT 1 FROM t_gigab2b_product_family_index m
+              WHERE m.family_sku = p.family_sku
+                AND m.collected = 1
+                AND m.sku IN
+                <foreach collection="excludeSkus" item="sku" open="(" separator="," close=")">
+                    #{sku}
+                </foreach>
+            )
+        </if>
     </select>
 
     <select id="selectPageIds" resultType="string">
@@ -264,6 +275,17 @@
                 AND m.giga_category_id IN
                 <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">
                     #{cid}
+                </foreach>
+            )
+        </if>
+        <if test="excludeSkus != null and excludeSkus.size() &gt; 0">
+            AND NOT EXISTS (
+              SELECT 1 FROM t_gigab2b_product_family_index m
+              WHERE m.family_sku = p.family_sku
+                AND m.collected = 1
+                AND m.sku IN
+                <foreach collection="excludeSkus" item="sku" open="(" separator="," close=")">
+                    #{sku}
                 </foreach>
             )
         </if>
@@ -495,5 +517,41 @@
         </foreach>
         ORDER BY i.family_sku, i.sort_no, i.sku
     </select>
+
+    <!-- 快照打标：detail_json.xqPickedPlatforms = {platformId: platformName} -->
+    <update id="mergePickedPlatform">
+        UPDATE t_gigab2b_product_snapshot
+        SET detail_json = JSON_SET(
+            IF(JSON_VALID(detail_json), detail_json, '{}'),
+            '$.xqPickedPlatforms',
+            JSON_SET(
+                IFNULL(
+                    CAST(JSON_EXTRACT(
+                        IF(JSON_VALID(detail_json), detail_json, '{}'),
+                        '$.xqPickedPlatforms'
+                    ) AS JSON),
+                    JSON_OBJECT()
+                ),
+                CONCAT('$."', #{platformId}, '"'),
+                #{platformName}
+            )
+        )
+        WHERE sku = #{sku}
+          AND detail_json IS NOT NULL
+    </update>
+
+    <update id="removePickedPlatform">
+        UPDATE t_gigab2b_product_snapshot
+        SET detail_json = JSON_SET(
+            detail_json,
+            '$.xqPickedPlatforms',
+            JSON_REMOVE(
+                IFNULL(CAST(JSON_EXTRACT(detail_json, '$.xqPickedPlatforms') AS JSON), JSON_OBJECT()),
+                CONCAT('$."', #{platformId}, '"')
+            )
+        )
+        WHERE sku = #{sku}
+          AND JSON_VALID(detail_json)
+    </update>
 
 </mapper>

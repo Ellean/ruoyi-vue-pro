@@ -24,4 +24,7 @@ public class XqProductPageReqVO extends PageParam {
     @Schema(description = "Giga 类目 ID（含子树）")
     private Long gigaCategoryId;
 
+    @Schema(description = "筛出该平台已选取（进行中/已上架）的商品")
+    private String excludePickedPlatformId;
+
 }

@@ -11,8 +11,10 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.product.XqProductRespV
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.product.XqProductSaveReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqProductDO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqGigaProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqProductMapper;
+import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqWorkOrderMapper;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
@@ -45,6 +47,8 @@ public class XqProductServiceImpl implements XqProductService {
     private XqProductMapper productMapper;
     @Resource
     private XqGigaProductMapper gigaProductMapper;
+    @Resource
+    private XqWorkOrderMapper workOrderMapper;
     @Resource
     private XqGigaCategoryService categoryService;
 
@@ -82,26 +86,37 @@ public class XqProductServiceImpl implements XqProductService {
                 ? 20 : pageReqVO.getPageSize();
         long offset = (long) (pageNo - 1) * pageSize;
 
+        Collection<String> excludeSkus = null;
+        if (StrUtil.isNotBlank(pageReqVO.getExcludePickedPlatformId())) {
+            List<String> picked = workOrderMapper.selectActiveSkusByPlatform(
+                    pageReqVO.getExcludePickedPlatformId().trim());
+            if (CollUtil.isNotEmpty(picked)) {
+                excludeSkus = picked;
+            }
+        }
+
         Long total;
-        boolean unfiltered = StrUtil.isBlank(pageReqVO.getName()) && CollUtil.isEmpty(categoryIds);
+        boolean unfiltered = StrUtil.isBlank(pageReqVO.getName())
+                && CollUtil.isEmpty(categoryIds)
+                && CollUtil.isEmpty(excludeSkus);
         if (unfiltered) {
             long now = System.currentTimeMillis();
             Long cached = unfilteredCountCache.get();
             if (cached != null && now - unfilteredCountCachedAt.get() < UNFILTERED_COUNT_TTL_MS) {
                 total = cached;
             } else {
-                total = gigaProductMapper.selectPageCount(pageReqVO.getName(), categoryIds);
+                total = gigaProductMapper.selectPageCount(pageReqVO.getName(), categoryIds, excludeSkus);
                 unfilteredCountCache.set(total);
                 unfilteredCountCachedAt.set(now);
             }
         } else {
-            total = gigaProductMapper.selectPageCount(pageReqVO.getName(), categoryIds);
+            total = gigaProductMapper.selectPageCount(pageReqVO.getName(), categoryIds, excludeSkus);
         }
         if (total == null || total <= 0) {
             return new PageResult<>(Collections.emptyList(), 0L);
         }
         List<String> ids = gigaProductMapper.selectPageIds(
-                pageReqVO.getName(), categoryIds, offset, pageSize);
+                pageReqVO.getName(), categoryIds, excludeSkus, offset, pageSize);
         if (CollUtil.isEmpty(ids)) {
             return new PageResult<>(Collections.emptyList(), total);
         }
@@ -137,6 +152,7 @@ public class XqProductServiceImpl implements XqProductService {
         } else {
             hydrateVariantCovers(list);
         }
+        attachPickedPlatforms(list);
         return new PageResult<>(list, total);
     }
 
@@ -157,7 +173,68 @@ public class XqProductServiceImpl implements XqProductService {
             vo.setVariants(buildVariantStubs(row));
             hydrateVariantDetails(vo, row);
         }
+        attachPickedPlatforms(Collections.singletonList(vo));
         return vo;
+    }
+
+    /** 进行中/已上架任务 → 卡片上的已选平台（家族 SKU 并集） */
+    private void attachPickedPlatforms(List<XqProductRespVO> list) {
+        if (CollUtil.isEmpty(list)) {
+            return;
+        }
+        Set<String> skus = new LinkedHashSet<>();
+        for (XqProductRespVO vo : list) {
+            if (StrUtil.isNotBlank(vo.getSku())) {
+                skus.add(vo.getSku());
+            }
+            if (StrUtil.isNotBlank(vo.getItemCode())) {
+                skus.add(vo.getItemCode());
+            }
+            for (XqProductRespVO.Variant v : CollUtil.emptyIfNull(vo.getVariants())) {
+                if (StrUtil.isNotBlank(v.getSku())) {
+                    skus.add(v.getSku());
+                }
+                if (StrUtil.isNotBlank(v.getItemCode())) {
+                    skus.add(v.getItemCode());
+                }
+            }
+        }
+        if (skus.isEmpty()) {
+            return;
+        }
+        Map<String, LinkedHashMap<String, String>> bySku = new LinkedHashMap<>();
+        for (XqWorkOrderDO row : workOrderMapper.selectPickedMarksBySkus(skus)) {
+            if (row == null || StrUtil.isBlank(row.getExternalSku()) || StrUtil.isBlank(row.getListingPlatformId())) {
+                continue;
+            }
+            bySku.computeIfAbsent(row.getExternalSku().trim(), k -> new LinkedHashMap<>())
+                    .putIfAbsent(row.getListingPlatformId().trim(),
+                            StrUtil.blankToDefault(row.getListingPlatformName(), row.getListingPlatformId()));
+        }
+        for (XqProductRespVO vo : list) {
+            LinkedHashMap<String, String> merged = new LinkedHashMap<>();
+            putPicked(merged, bySku.get(vo.getSku()));
+            putPicked(merged, bySku.get(vo.getItemCode()));
+            for (XqProductRespVO.Variant v : CollUtil.emptyIfNull(vo.getVariants())) {
+                putPicked(merged, bySku.get(v.getSku()));
+                putPicked(merged, bySku.get(v.getItemCode()));
+            }
+            List<XqProductRespVO.PickedPlatform> platforms = new ArrayList<>(merged.size());
+            merged.forEach((id, name) -> {
+                XqProductRespVO.PickedPlatform p = new XqProductRespVO.PickedPlatform();
+                p.setId(id);
+                p.setName(name);
+                platforms.add(p);
+            });
+            vo.setPickedPlatforms(platforms);
+        }
+    }
+
+    private static void putPicked(LinkedHashMap<String, String> into, LinkedHashMap<String, String> from) {
+        if (from == null || from.isEmpty()) {
+            return;
+        }
+        from.forEach(into::putIfAbsent);
     }
 
     private XqProductRespVO toResp(XqGigaProductRow row, boolean withGallery) {

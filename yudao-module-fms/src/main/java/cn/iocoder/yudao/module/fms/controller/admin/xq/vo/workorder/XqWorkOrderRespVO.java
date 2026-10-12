@@ -37,6 +37,8 @@ public class XqWorkOrderRespVO {
     private Long copyUserId;
     private Long imageUserId;
     private String imageStatus;
+    /** 图片驳回原因 */
+    private String imageRejectReason;
     /** 上架子状态：export_pending_confirm / listed */
     private String listingStatus;
     private String listingValuesJson;

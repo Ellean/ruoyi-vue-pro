@@ -62,6 +62,14 @@ public class XqProductRespVO {
     private String characteristics;
     private String attributesJson;
     private List<Variant> variants = new ArrayList<>();
+    /** 已选取过的上架平台（家族 SKU 并集） */
+    private List<PickedPlatform> pickedPlatforms = new ArrayList<>();
+
+    @Data
+    public static class PickedPlatform {
+        private String id;
+        private String name;
+    }
 
     @Data
     public static class Variant {

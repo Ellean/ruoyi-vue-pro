@@ -19,4 +19,13 @@ public class XqRpaTriggerRespVO {
     @Schema(description = "是否已下发入参")
     private Boolean inputParamSent;
 
+    @Schema(description = "实际使用的执行器")
+    private String runnerMode;
+    @Schema(description = "本地路径（script/exe）")
+    private String runnerPath;
+    @Schema(description = "命令预览")
+    private String runnerCommandPreview;
+    @Schema(description = "补充说明")
+    private String message;
+
 }

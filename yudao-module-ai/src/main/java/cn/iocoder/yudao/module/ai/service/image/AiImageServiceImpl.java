@@ -154,9 +154,17 @@ public class AiImageServiceImpl implements AiImageService {
             // 有参考图且 OpenAI：走改图（edits / reference_images），不走文生图
             if (ObjUtil.equal(model.getPlatform(), AiPlatformEnum.OPENAI.getPlatform())
                     && StrUtil.isNotBlank(referImageUrl)) {
+                // ToAPIs：尽量带上 bytes，由 EditApi 走 /uploads/images（内网 URL 中转站拉不到）
                 byte[] referBytes = null;
-                if (!OpenAiCompatibleImageEditApi.isToapis(apiKey)) {
+                try {
                     referBytes = HttpUtil.downloadBytes(referImageUrl);
+                } catch (Exception ex) {
+                    if (!OpenAiCompatibleImageEditApi.isToapis(apiKey)) {
+                        throw ex;
+                    }
+                    // ToAPIs 仍可尝试直接传公网 URL
+                    log.warn("[executeDrawImage][image({}) 参考图下载失败，将尝试直传 URL] {}",
+                            image.getId(), ex.getMessage());
                 }
                 OpenAiCompatibleImageEditApi.EditResult editResult = null;
                 for (String candidate : candidates) {

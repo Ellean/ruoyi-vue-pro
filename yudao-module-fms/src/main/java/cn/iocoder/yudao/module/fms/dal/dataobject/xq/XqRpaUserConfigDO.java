@@ -35,4 +35,15 @@ public class XqRpaUserConfigDO extends BaseDO {
     private String account;
     private String password;
 
+    /**
+     * 执行器：commander（影刀控制中枢，默认）/ script（自写脚本）/ exe（本地可执行文件）
+     */
+    private String runnerMode;
+    /** script/exe 绝对路径 */
+    private String runnerPath;
+    /** 附加参数，支持 {jobKind} {workUuid} {jobUuid} */
+    private String runnerArgs;
+    /** 工作目录（可选） */
+    private String runnerWorkdir;
+
 }

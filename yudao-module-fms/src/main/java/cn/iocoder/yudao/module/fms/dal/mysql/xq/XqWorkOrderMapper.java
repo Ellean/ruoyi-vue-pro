@@ -47,23 +47,18 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eqIfPresent(XqWorkOrderDO::getListingCategoryId, reqVO.getListingCategoryId());
         applyFlowStatus(wrapper, reqVO.getFlowStatus());
         if (reqVO.getBoundUserId() != null && !imagePoolFlat) {
-            Long uid = reqVO.getBoundUserId();
-            String creator = String.valueOf(uid);
-            wrapper.and(w -> w.eq(XqWorkOrderDO::getAssigneeUserId, uid)
-                    .or().eq(XqWorkOrderDO::getCopyUserId, uid)
-                    .or().eq(XqWorkOrderDO::getImageUserId, uid)
-                    .or().eq(XqWorkOrderDO::getCreator, creator));
+            // 文案/任务工作台：下发时已经按认领人切开，列表不再按文案池二次筛选
+            wrapper.eq(XqWorkOrderDO::getAssigneeUserId, reqVO.getBoundUserId());
         }
         if (reqVO.getMineUserId() != null) {
-            wrapper.and(w -> w.eq(XqWorkOrderDO::getCopyUserId, reqVO.getMineUserId())
-                    .or()
-                    .eq(XqWorkOrderDO::getAssigneeUserId, reqVO.getMineUserId()));
+            wrapper.eq(XqWorkOrderDO::getAssigneeUserId, reqVO.getMineUserId());
         }
         if (imagePoolFlat && imageArtistId != null) {
             applyImagePoolFamilyFilter(wrapper, imageArtistId);
         }
         if (Boolean.TRUE.equals(reqVO.getListingReady())) {
-            wrapper.in(XqWorkOrderDO::getImageStatus, "done", "generated", "revised");
+            // 须审核确认图文（imageStatus=done）后才可上架
+            wrapper.eq(XqWorkOrderDO::getImageStatus, "done");
         }
         // 文案池/任务列表仍只出主体；图片池出扁平全量 SKU
         if (!imagePoolFlat) {
@@ -117,9 +112,14 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                             .in(XqWorkOrderDO::getImageStatus, "todo", "pending"));
             case "image_running" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
                     .isNotNull(XqWorkOrderDO::getImageUserId)
-                    .in(XqWorkOrderDO::getImageStatus, "running", "generated", "revised", "rejected");
+                    .in(XqWorkOrderDO::getImageStatus, "running", "rejected");
+            // 已出图待运营确认图文
+            case "review_pending" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
+                    .isNotNull(XqWorkOrderDO::getImageUserId)
+                    .in(XqWorkOrderDO::getImageStatus, "generated", "revised");
+            // 审核通过（done）后才进待上架
             case "list_pending" -> wrapper.eq(XqWorkOrderDO::getStatus, 10)
-                    .and(w -> w.in(XqWorkOrderDO::getImageStatus, "done", "generated", "revised")
+                    .and(w -> w.eq(XqWorkOrderDO::getImageStatus, "done")
                             .or()
                             .eq(XqWorkOrderDO::getListingStatus, "export_pending_confirm")
                             .or()
@@ -195,43 +195,69 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .orderByAsc(XqWorkOrderDO::getId));
     }
 
+    /** 当前用户工作台上进行中的任务（下发认领人 = 我），含变体，不按文案状态筛。 */
+    default List<XqWorkOrderDO> selectDoingByAssignee(Long userId, int limit) {
+        int n = Math.max(1, Math.min(limit, 50));
+        return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getStatus, 10)
+                .eq(XqWorkOrderDO::getAssigneeUserId, userId)
+                .orderByAsc(XqWorkOrderDO::getId)
+                .last("LIMIT " + n));
+    }
+
     /**
-     * 当前登录人待跑文案：扁平清单（主体/变体无主次）。
-     * 含 queued；以及超过 1 分钟仍 stuck 在 running 的（识图/中途失败未回写时回收）。
+     * 当前登录人工作台上的待跑文案（下发认领人 = 我）。
+     * queued / running 在内存筛，避免 MP 嵌套 OR 把 update_time 套到刚入队的 queued 上。
      */
     default List<XqWorkOrderDO> selectPendingCopyJobs(Long userId, int limit) {
         int n = Math.max(1, Math.min(limit, 20));
         java.time.LocalDateTime stuckBefore = java.time.LocalDateTime.now().minusMinutes(1);
-        return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
+        List<XqWorkOrderDO> rows = selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getStatus, 10)
-                .eq(XqWorkOrderDO::getCopyUserId, userId)
-                .and(w -> w.eq(XqWorkOrderDO::getRpaCopyStatus, "queued")
-                        .or(w2 -> w2.eq(XqWorkOrderDO::getRpaCopyStatus, "running")
-                                .lt(XqWorkOrderDO::getUpdateTime, stuckBefore)))
+                .eq(XqWorkOrderDO::getAssigneeUserId, userId)
+                .in(XqWorkOrderDO::getRpaCopyStatus, "queued", "running")
                 .orderByAsc(XqWorkOrderDO::getId)
-                .last("LIMIT " + n));
+                .last("LIMIT " + Math.max(n * 3, 30)));
+        List<XqWorkOrderDO> out = new java.util.ArrayList<>();
+        for (XqWorkOrderDO row : rows) {
+            String st = row.getRpaCopyStatus();
+            if ("queued".equalsIgnoreCase(st == null ? "" : st.trim())) {
+                out.add(row);
+            } else if ("running".equalsIgnoreCase(st == null ? "" : st.trim())
+                    && row.getUpdateTime() != null
+                    && row.getUpdateTime().isBefore(stuckBefore)) {
+                out.add(row);
+            }
+            if (out.size() >= n) {
+                break;
+            }
+        }
+        return out;
     }
 
     default XqWorkOrderDO selectDoingCopyBySku(Long userId, String sku) {
         return selectOne(new LambdaQueryWrapperX<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getExternalSku, sku)
                 .eq(XqWorkOrderDO::getStatus, 10)
-                .and(w -> w.eq(XqWorkOrderDO::getCopyUserId, userId)
-                        .or()
-                        .isNull(XqWorkOrderDO::getCopyUserId))
+                .eq(XqWorkOrderDO::getAssigneeUserId, userId)
                 .orderByDesc(XqWorkOrderDO::getId)
                 .last("LIMIT 1"));
     }
 
     /**
-     * 当前登录美工待跑生图：queued；以及超过 2 分钟仍 stuck 在 running 的回收。
+     * 待跑生图：运营（copyUserId/assignee）本机 RPA 优先领取；
+     * 也允许美工（imageUserId）自拉。queued；以及超过 2 分钟仍 stuck 在 running 的回收。
      */
     default List<XqWorkOrderDO> selectPendingImageJobs(Long userId, int limit) {
         int n = Math.max(1, Math.min(limit, 20));
         java.time.LocalDateTime stuckBefore = java.time.LocalDateTime.now().minusMinutes(2);
         return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getStatus, 10)
-                .eq(XqWorkOrderDO::getImageUserId, userId)
+                .and(w -> w.eq(XqWorkOrderDO::getCopyUserId, userId)
+                        .or()
+                        .eq(XqWorkOrderDO::getAssigneeUserId, userId)
+                        .or()
+                        .eq(XqWorkOrderDO::getImageUserId, userId))
                 .and(w -> w.eq(XqWorkOrderDO::getRpaImageStatus, "queued")
                         .or(w2 -> w2.eq(XqWorkOrderDO::getRpaImageStatus, "running")
                                 .lt(XqWorkOrderDO::getUpdateTime, stuckBefore)))
@@ -256,6 +282,41 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eq(XqWorkOrderDO::getListingPlatformId, listingPlatformId)
                 .in(XqWorkOrderDO::getStatus, 10, 20)
                 .last("LIMIT 1"));
+    }
+
+    /** 列表展示：SKU → 已选取平台 */
+    default List<XqWorkOrderDO> selectPickedMarksBySkus(Collection<String> skus) {
+        if (skus == null || skus.isEmpty()) {
+            return List.of();
+        }
+        return selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .select(XqWorkOrderDO::getExternalSku,
+                        XqWorkOrderDO::getListingPlatformId,
+                        XqWorkOrderDO::getListingPlatformName)
+                .in(XqWorkOrderDO::getExternalSku, skus)
+                .in(XqWorkOrderDO::getStatus, 10, 20)
+                .isNotNull(XqWorkOrderDO::getListingPlatformId)
+                .ne(XqWorkOrderDO::getListingPlatformId, ""));
+    }
+
+    /** 筛出本平台已选：该平台进行中/已上架的 SKU */
+    default List<String> selectActiveSkusByPlatform(String listingPlatformId) {
+        if (listingPlatformId == null || listingPlatformId.isBlank()) {
+            return List.of();
+        }
+        List<XqWorkOrderDO> rows = selectList(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .select(XqWorkOrderDO::getExternalSku)
+                .eq(XqWorkOrderDO::getListingPlatformId, listingPlatformId)
+                .in(XqWorkOrderDO::getStatus, 10, 20)
+                .isNotNull(XqWorkOrderDO::getExternalSku)
+                .ne(XqWorkOrderDO::getExternalSku, ""));
+        LinkedHashSet<String> skus = new LinkedHashSet<>();
+        for (XqWorkOrderDO row : rows) {
+            if (row.getExternalSku() != null && !row.getExternalSku().isBlank()) {
+                skus.add(row.getExternalSku().trim());
+            }
+        }
+        return List.copyOf(skus);
     }
 
     /**

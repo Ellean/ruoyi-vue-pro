@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS `xq_work_order` (
   `giga_category_id` bigint DEFAULT NULL COMMENT 'Giga 类目 id',
   `status` tinyint NOT NULL DEFAULT 10,
   `content_title` varchar(512) DEFAULT NULL,
-  `content_selling_points` varchar(1024) DEFAULT NULL,
+  `content_selling_points` mediumtext DEFAULT NULL,
   `generated_image_url` varchar(512) DEFAULT NULL COMMENT '生成图URL',
   `product_id` bigint DEFAULT NULL,
   `product_sku` varchar(64) DEFAULT NULL,

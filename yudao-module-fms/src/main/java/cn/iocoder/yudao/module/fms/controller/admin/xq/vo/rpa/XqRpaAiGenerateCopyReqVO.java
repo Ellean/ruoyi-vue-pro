@@ -37,4 +37,10 @@ public class XqRpaAiGenerateCopyReqVO {
     /** 卖点下标（从 0 起，target=feature 时有效） */
     private Integer featureIndex;
 
+    /**
+     * 分项写作提示词（工作台导入/编辑）：
+     * { title, features: string[], description }
+     */
+    private Map<String, Object> copyPrompts;
+
 }

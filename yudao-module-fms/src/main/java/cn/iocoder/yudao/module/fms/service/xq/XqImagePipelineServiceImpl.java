@@ -6,11 +6,13 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqImageGenRuleRespVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaTriggerRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRpaImageCallbackReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqRpaUserConfigDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqRpaUserConfigMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqWorkOrderMapper;
+import cn.iocoder.yudao.module.fms.service.xq.rpa.CommanderRpaJobLauncher;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import static cn.iocoder.yudao.framework.common.exception.util.ServiceExceptionUtil.exception;
@@ -53,27 +56,65 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
     private XqListingCatalogService listingCatalogService;
     @Resource
     private XqRpaUserConfigMapper rpaUserConfigMapper;
+    @Resource
+    private XqCopyPipelineService copyPipelineService;
+    @Resource
+    private XqRpaConfigService rpaConfigService;
+
+    /**
+     * 生图 RPA 执行人：优先运营（文案执行人/认领人）的个人 RPA 配置与 Job，
+     * 美工只负责点执行与改提示词，不要求自己配生图 Job。
+     */
+    private static Long resolveOpsRpaUserId(XqWorkOrderDO order, Long fallbackUserId) {
+        if (order != null) {
+            if (order.getCopyUserId() != null) {
+                return order.getCopyUserId();
+            }
+            if (order.getAssigneeUserId() != null) {
+                return order.getAssigneeUserId();
+            }
+        }
+        return fallbackUserId;
+    }
 
     @Override
     public Map<String, Object> buildJobInput(XqWorkOrderDO order, Long userId) {
         if (order == null || order.getId() == null) {
             throw exception(XQ_WORK_ORDER_NOT_EXISTS);
         }
+        // 生图前按本 SKU 纠正原图，避免其它变体色图进 RPA
+        copyPipelineService.enrichSourceIfNeeded(order);
         XqImageGenRuleRespVO imageRule = listingCatalogService.getImageRule(
                 order.getListingPlatformId(), order.getListingCategoryId());
 
         Map<String, Object> input = new LinkedHashMap<>();
-        XqRpaUserConfigDO userCfg = rpaUserConfigMapper.selectByUserId(userId);
-        if (userCfg != null) {
-            if (StrUtil.isNotBlank(userCfg.getErpSiteUrl())) {
-                input.put("http", userCfg.getErpSiteUrl().trim());
+        // 美工点执行 → 用运营个人 RPA 执行记录（账户/密码/站点/Job）跑 AI
+        Long opsUserId = resolveOpsRpaUserId(order, userId);
+        try {
+            XqRpaUserConfigDO userCfg = rpaUserConfigMapper.selectByUserId(opsUserId);
+            if (userCfg == null && userId != null && !Objects.equals(opsUserId, userId)) {
+                userCfg = rpaUserConfigMapper.selectByUserId(userId);
             }
-            if (StrUtil.isNotBlank(userCfg.getAccount())) {
-                input.put("账户", userCfg.getAccount().trim());
+            if (userCfg != null) {
+                if (StrUtil.isNotBlank(userCfg.getErpSiteUrl())) {
+                    input.put("http", userCfg.getErpSiteUrl().trim());
+                }
+                if (StrUtil.isNotBlank(userCfg.getAccount())) {
+                    input.put("账户", userCfg.getAccount().trim());
+                }
+                if (StrUtil.isNotBlank(userCfg.getPassword())) {
+                    input.put("密码", userCfg.getPassword().trim());
+                }
             }
-            if (StrUtil.isNotBlank(userCfg.getPassword())) {
-                input.put("密码", userCfg.getPassword().trim());
-            }
+        } catch (Exception ex) {
+            log.warn("[buildJobInput-image] 读取运营RPA配置失败 opsUserId={} err={}",
+                    opsUserId, ex.getMessage());
+        }
+        Long tenantId = cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder.getTenantId();
+        if (tenantId != null) {
+            String tid = String.valueOf(tenantId);
+            input.put("租户", tid);
+            input.put("tenantId", tid);
         }
 
         input.put("pipeline", "image_generate");
@@ -87,6 +128,10 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
         input.put("listingPlatformName", order.getListingPlatformName());
         input.put("listingCategoryId", order.getListingCategoryId());
         input.put("listingCategoryName", order.getListingCategoryName());
+        input.put("imageUserId", order.getImageUserId());
+        input.put("copyUserId", order.getCopyUserId());
+        input.put("assigneeUserId", order.getAssigneeUserId());
+        input.put("rpaOwnerUserId", opsUserId);
 
         List<String> sourceImages = parseImageUrls(order.getSourceImageUrls(), order.getCoverUrl());
         if (sourceImages.isEmpty()) {
@@ -117,8 +162,8 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
         input.put("steps", List.of(
                 "1.load_prompts: 读取 imagePrompts（含 bindIndexes / promptText）",
                 "2.download_bound_images: 按绑定原图下载到本机",
-                "3.generate_images: 调用生图模型按槽位出图",
-                "4.upload_results: 上传成品并写回 resultUrl",
+                "3.generate_images: POST /xq/rpa/ai/generate-image",
+                "4.upload_results: POST /xq/rpa/ai/upload-image（若本地需再传）",
                 "5.callback: 回调 rpa-image-callback"
         ));
 
@@ -126,6 +171,8 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
         input.put("apiBaseUrl", base);
         input.put("callbackUrl", base + "/xq/work-order/rpa-image-callback");
         input.put("callbackToken", callbackToken);
+        input.put("aiGenerateImagePath", "/xq/rpa/ai/generate-image");
+        input.put("aiUploadImagePath", "/xq/rpa/ai/upload-image");
         return input;
     }
 
@@ -137,20 +184,53 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
         if (!Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
             throw exception(XQ_WORK_ORDER_STATUS_INVALID);
         }
-        // 校验提示词与原图
-        buildJobInput(order, userId);
+        // 校验提示词与原图；组包用运营 RPA 配置
+        Map<String, Object> input = buildJobInput(order, userId);
 
+        // 美工归属保留；RPA 执行走运营（copyUserId/assignee）的 Job
         Long imageUserId = order.getImageUserId() != null ? order.getImageUserId() : userId;
+        Long opsUserId = resolveOpsRpaUserId(order, userId);
+        String workUuid = null;
+        try {
+            workUuid = triggerImageJobWithOpsConfig(opsUserId, input);
+        } catch (Exception ex) {
+            // 触发失败仍入队，运营本机机器人可按队列拉取
+            log.warn("[enqueueImageJob] 触发运营生图RPA失败，已入队待拉取 workOrderId={} opsUserId={} err={}",
+                    order.getId(), opsUserId, ex.getMessage());
+        }
         workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getId, order.getId())
                 .set(XqWorkOrderDO::getImageUserId, imageUserId)
                 .set(XqWorkOrderDO::getRpaImageStatus, RPA_STATUS_QUEUED)
                 .set(XqWorkOrderDO::getRpaImageError, null)
-                .set(XqWorkOrderDO::getRpaImageWorkUuid, null)
+                .set(XqWorkOrderDO::getRpaImageWorkUuid, workUuid)
                 .set(XqWorkOrderDO::getImageStatus, "running")
                 .set(XqWorkOrderDO::getWorkflowPhase, "image")
                 .set(XqWorkOrderDO::getAssigneeUserId,
-                        order.getAssigneeUserId() == null ? userId : order.getAssigneeUserId()));
+                        order.getAssigneeUserId() == null ? opsUserId : order.getAssigneeUserId()));
+    }
+
+    /** 用运营个人 RPA 配置（imageJobUuid / runner）拉起生图执行记录 */
+    private String triggerImageJobWithOpsConfig(Long opsUserId, Map<String, Object> input) {
+        if (opsUserId == null) {
+            return null;
+        }
+        XqRpaUserConfigDO userCfg = rpaUserConfigMapper.selectByUserId(opsUserId);
+        if (userCfg == null) {
+            return null;
+        }
+        String mode = cn.iocoder.yudao.module.fms.service.xq.rpa.XqRpaJobLauncherRegistry
+                .normalizeMode(userCfg.getRunnerMode());
+        String jobUuid = StrUtil.trim(userCfg.getImageJobUuid());
+        if (CommanderRpaJobLauncher.MODE.equals(mode) && StrUtil.isBlank(jobUuid)) {
+            return null;
+        }
+        if (!CommanderRpaJobLauncher.MODE.equals(mode) && StrUtil.isBlank(userCfg.getRunnerPath())) {
+            return null;
+        }
+        XqRpaTriggerRespVO result = rpaConfigService.launch(
+                opsUserId, "image", StrUtil.blankToDefault(jobUuid, userCfg.getRunnerPath()), input);
+        return result == null ? null : result.getWorkUuid();
     }
 
     @Override
@@ -159,6 +239,8 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
             throw exception(XQ_DISPATCH_EMPTY);
         }
         int n = 0;
+        Long opsUserId = null;
+        Map<String, Object> sampleInput = null;
         for (Long id : ids) {
             if (id == null) {
                 continue;
@@ -167,8 +249,44 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
             if (order == null || !Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
                 continue;
             }
-            enqueueImageJob(order, userId);
+            // 批量：先入队不重复触发；整批成功后用运营配置触发一次
+            Map<String, Object> input = buildJobInput(order, userId);
+            Long imageUserId = order.getImageUserId() != null ? order.getImageUserId() : userId;
+            Long rowOps = resolveOpsRpaUserId(order, userId);
+            if (opsUserId == null) {
+                opsUserId = rowOps;
+                sampleInput = input;
+            }
+            workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+                    .eq(XqWorkOrderDO::getId, order.getId())
+                    .set(XqWorkOrderDO::getImageUserId, imageUserId)
+                    .set(XqWorkOrderDO::getRpaImageStatus, RPA_STATUS_QUEUED)
+                    .set(XqWorkOrderDO::getRpaImageError, null)
+                    .set(XqWorkOrderDO::getRpaImageWorkUuid, null)
+                    .set(XqWorkOrderDO::getImageStatus, "running")
+                    .set(XqWorkOrderDO::getWorkflowPhase, "image")
+                    .set(XqWorkOrderDO::getAssigneeUserId,
+                            order.getAssigneeUserId() == null ? rowOps : order.getAssigneeUserId()));
             n += 1;
+        }
+        if (n > 0 && opsUserId != null) {
+            try {
+                String workUuid = triggerImageJobWithOpsConfig(opsUserId, sampleInput);
+                if (StrUtil.isNotBlank(workUuid)) {
+                    for (Long id : ids) {
+                        if (id == null) {
+                            continue;
+                        }
+                        workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+                                .eq(XqWorkOrderDO::getId, id)
+                                .eq(XqWorkOrderDO::getRpaImageStatus, RPA_STATUS_QUEUED)
+                                .set(XqWorkOrderDO::getRpaImageWorkUuid, workUuid));
+                    }
+                }
+            } catch (Exception ex) {
+                log.warn("[enqueueImageJobs] 触发运营生图RPA失败，已入队 {} 条待拉取 opsUserId={} err={}",
+                        n, opsUserId, ex.getMessage());
+            }
         }
         return n;
     }
@@ -179,12 +297,13 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
             throw exception(XQ_RPA_CONFIG_INVALID);
         }
         int n = limit == null || limit < 1 ? 10 : limit;
+        // 运营本机机器人按 copy/assignee 拉；美工也可拉自己名下
         List<XqWorkOrderDO> orders = workOrderMapper.selectPendingImageJobs(userId, n);
         List<Map<String, Object>> jobs = new ArrayList<>();
         for (XqWorkOrderDO order : orders) {
+            // 勿覆盖 imageUserId（美工归属），只改 RPA 执行态
             workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
                     .eq(XqWorkOrderDO::getId, order.getId())
-                    .set(XqWorkOrderDO::getImageUserId, userId)
                     .set(XqWorkOrderDO::getRpaImageStatus, RPA_STATUS_RUNNING)
                     .set(XqWorkOrderDO::getRpaImageError, null)
                     .set(XqWorkOrderDO::getImageStatus, "running")

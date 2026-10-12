@@ -2,14 +2,16 @@ package cn.iocoder.yudao.module.fms.service.xq;
 
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiClassifyImagesReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiGenerateCopyReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiGenerateImageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiImagePromptsReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiUploadImageReqVO;
 
 import java.util.List;
 import java.util.Map;
 
 /**
- * RPA 文案流水线 AI：主 API 只跑文案 Chat，并把模型地址交给机器人。
- * 原图下载与识图在 RPA 本机，不在服务端转二进制。
+ * RPA AI：文案 / 识图配置 / 生图 / 上传。
+ * 边界：生图同步等待上游（过渡）；长期应迁独立 worker。
  */
 public interface XqRpaAiService {
 
@@ -20,5 +22,17 @@ public interface XqRpaAiService {
     List<Map<String, Object>> classifyImages(XqRpaAiClassifyImagesReqVO reqVO);
 
     List<Map<String, Object>> generateImagePrompts(XqRpaAiImagePromptsReqVO reqVO);
+
+    /** 生图/改图（对齐旧 Aixoras RPA 入参，回 url）；校验 callbackToken */
+    Map<String, Object> generateImage(XqRpaAiGenerateImageReqVO reqVO);
+
+    /**
+     * 管理端登录态生图/改图（不校验 callbackToken）。
+     * 边界：仍同步等待上游（过渡）；单图改图预览用，长期应迁 worker。
+     */
+    Map<String, Object> generateImageForConsole(XqRpaAiGenerateImageReqVO reqVO);
+
+    /** 上传成品图，返回可公网访问 url */
+    Map<String, Object> uploadImage(XqRpaAiUploadImageReqVO reqVO);
 
 }

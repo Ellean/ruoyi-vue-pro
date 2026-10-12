@@ -14,13 +14,13 @@ public interface XqImagePipelineService {
     /** 组装单条生图任务给 RPA 的 inputParam */
     Map<String, Object> buildJobInput(XqWorkOrderDO order, Long userId);
 
-    /** 写入美工待跑生图队列，不触发 Commander */
+    /** 写入生图队列；用运营个人 RPA 执行记录触发/组包，美工归属不变 */
     void enqueueImageJob(XqWorkOrderDO order, Long userId);
 
     /** 批量入队；返回成功条数 */
     int enqueueImageJobs(List<Long> ids, Long userId);
 
-    /** RPA：按当前登录美工领取待跑生图 */
+    /** RPA：运营或美工领取待跑生图（组包仍用运营 RPA 配置） */
     List<Map<String, Object>> pullImageJobs(Long userId, Integer limit);
 
     /** 按任务 ID 返回生图任务包 */

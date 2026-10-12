@@ -57,6 +57,8 @@ spring:
         pool-prepared-statements: true # 是否开启 PreparedStatement 缓存
         max-pool-prepared-statement-per-connection-size: 20 # 每个连接缓存的 PreparedStatement 数量
       primary: master
+      # xq 未匹配时禁止静默回落主库（否则会报 ruoyi-vue-pro.t_giga_* 不存在）
+      strict: true
       datasource:
         master:
           url: jdbc:mysql://127.0.0.1:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true # MySQL Connector/J 8.X 连接的示例
@@ -303,10 +305,14 @@ justauth:
 
 --- #################### XQ RPA / AI ####################
 xq:
+  # 上架分表原始 Excel 根目录（对齐旧 ERP backend/uploads/gigab2b/listing-templates）
+  listing-template-root: D:/xq-xm/xq-erp/backend/uploads/gigab2b/listing-templates
   rpa:
-    # RPA ?????? RPA ??????????
+    # RPA 回调（芋道 admin-api）；生图 Aixoras 仍走旧 ERP，见 erp-base-url
     callback-base-url: http://127.0.0.1:48080/admin-api
     callback-token: xq-rpa-callback
+    # 旧 ERP（xq-erp）根地址，供 Aixoras/OSS；勿填 5666/48080。个人 RPA 未配或配错前端端口时用此兜底
+    erp-base-url: http://182.92.3.138
   ai:
     # ???? spring.ai.openai.*?????? sk-xxxx ??? mock
     base-url: ${OPENAI_BASE_URL:https://api.openai.com}

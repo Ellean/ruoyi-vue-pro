@@ -11,4 +11,10 @@ public class XqListingPlatformRespVO {
     private String name;
     private Integer sortOrder;
     private Boolean enabled;
+    /** 原库 catalog_source：excel_template / mirakl_api / wayfair_api */
+    private String catalogSource;
+    /** 归一：export | api */
+    private String listingMode;
+    /** 原库 t_giga_listing_platform.id */
+    private String sourcePlatformId;
 }

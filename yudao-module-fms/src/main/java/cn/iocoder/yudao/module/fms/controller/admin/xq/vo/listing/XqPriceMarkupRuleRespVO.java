@@ -21,6 +21,7 @@ public class XqPriceMarkupRuleRespVO {
     private BigDecimal freightRate;
     private String applyTo;
     private Boolean enabled;
+    private Boolean isDefault;
     private String summary;
     private BigDecimal samplePrice;
 }

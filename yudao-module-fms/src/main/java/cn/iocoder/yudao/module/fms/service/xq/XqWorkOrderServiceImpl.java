@@ -5,6 +5,7 @@ import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
+import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqAssignableImageUserRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderAssignImageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBatchIdsReqVO;
@@ -17,20 +18,29 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderC
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRegenerateCopyReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseCandidateRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseLookupReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReviseImageReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReviseImageRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiGenerateImageReqVO;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqProductDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
+import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingPlatformCredentialDO;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqGigaProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqWorkOrderMapper;
+import cn.iocoder.yudao.module.fms.service.xq.listing.XqListingExportResult;
+import cn.iocoder.yudao.module.fms.service.xq.listing.XqListingSplitExportService;
+import cn.iocoder.yudao.module.fms.service.xq.listing.XqMiraklListingClient;
+import cn.iocoder.yudao.module.fms.service.xq.listing.XqWayfairListingClient;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.module.system.api.permission.PermissionApi;
 import cn.iocoder.yudao.module.system.api.user.AdminUserApi;
 import cn.iocoder.yudao.module.system.api.user.dto.AdminUserRespDTO;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.validation.annotation.Validated;
@@ -50,6 +60,7 @@ import static cn.iocoder.yudao.module.fms.service.xq.XqSourceItemServiceImpl.WOR
 
 @Service
 @Validated
+@Slf4j
 public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
     public static final int WORK_STATUS_DONE = 20;
@@ -66,9 +77,21 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     @Resource
     private XqImagePipelineService imagePipelineService;
     @Resource
+    private XqRpaAiService rpaAiService;
+    @Resource
     private XqGigaProductMapper gigaProductMapper;
     @Resource
     private XqStoreScopeService storeScopeService;
+    @Resource
+    private XqListingModeHelper listingModeHelper;
+    @Resource
+    private XqListingCredentialService listingCredentialService;
+    @Resource
+    private XqListingSplitExportService listingSplitExportService;
+    @Resource
+    private XqMiraklListingClient miraklListingClient;
+    @Resource
+    private XqWayfairListingClient wayfairListingClient;
     @Resource
     private AdminUserApi adminUserApi;
     @Resource
@@ -76,7 +99,18 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
     @Override
     public PageResult<XqWorkOrderDO> getWorkOrderPage(XqWorkOrderPageReqVO pageReqVO) {
-        return workOrderMapper.selectPage(pageReqVO);
+        PageResult<XqWorkOrderDO> page = workOrderMapper.selectPage(pageReqVO);
+        // 纠正历史「合并父/家族变体原图」污染，图片池刷新即可看到本 SKU 图
+        if (page != null && CollUtil.isNotEmpty(page.getList())) {
+            for (XqWorkOrderDO row : page.getList()) {
+                try {
+                    copyPipelineService.enrichSourceIfNeeded(row);
+                } catch (Exception ignored) {
+                    // 补齐失败不阻断列表
+                }
+            }
+        }
+        return page;
     }
 
     @Override
@@ -86,6 +120,11 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             return null;
         }
         assertOwner(order);
+        try {
+            copyPipelineService.enrichSourceIfNeeded(order);
+        } catch (Exception ignored) {
+            // ignore
+        }
         return order;
     }
 
@@ -235,6 +274,10 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         }
         if (created.isEmpty()) {
             throw exception(XQ_DISPATCH_EMPTY);
+        }
+        for (XqWorkOrderDO order : created) {
+            markSnapshotPicked(order.getExternalSku(), order.getListingPlatformId(),
+                    order.getListingPlatformName());
         }
         return created;
     }
@@ -429,10 +472,13 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         }
         // 关闭 + 清空文案/美工/生成图等进度，避免残留在「我的文案」
         workOrderMapper.closeAndClearProgress(id);
+        unmarkSnapshotIfIdle(order.getExternalSku(), order.getListingPlatformId());
         if (order.getParentWorkOrderId() == null) {
             for (XqWorkOrderDO child : workOrderMapper.selectByParentIds(List.of(id))) {
                 if (Integer.valueOf(WORK_STATUS_DOING).equals(child.getStatus())) {
                     workOrderMapper.closeAndClearProgress(child.getId());
+                    unmarkSnapshotIfIdle(child.getExternalSku(),
+                            StrUtil.blankToDefault(child.getListingPlatformId(), order.getListingPlatformId()));
                 }
             }
         }
@@ -455,10 +501,13 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
                 continue;
             }
             workOrderMapper.closeAndClearProgress(id);
+            unmarkSnapshotIfIdle(order.getExternalSku(), order.getListingPlatformId());
             if (order.getParentWorkOrderId() == null) {
                 for (XqWorkOrderDO child : workOrderMapper.selectByParentIds(List.of(id))) {
                     if (Integer.valueOf(WORK_STATUS_DOING).equals(child.getStatus())) {
                         workOrderMapper.closeAndClearProgress(child.getId());
+                        unmarkSnapshotIfIdle(child.getExternalSku(),
+                                StrUtil.blankToDefault(child.getListingPlatformId(), order.getListingPlatformId()));
                     }
                 }
             }
@@ -470,6 +519,29 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     @Override
     public XqWorkOrderDO generateCopy(Long id, Long userId) {
         return generateCopyInternal(id, userId);
+    }
+
+    @Override
+    public long countQueuedCopyForUser(Long userId) {
+        if (userId == null) {
+            return 0L;
+        }
+        return workOrderMapper.selectCount(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getStatus, WORK_STATUS_DOING)
+                .eq(XqWorkOrderDO::getAssigneeUserId, userId)
+                .eq(XqWorkOrderDO::getRpaCopyStatus, "queued"));
+    }
+
+    @Override
+    public long countQueuedCopyOnDesk(Long userId) {
+        return countQueuedCopyForUser(userId);
+    }
+
+    @Override
+    public long countQueuedCopyAll() {
+        return workOrderMapper.selectCount(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getStatus, WORK_STATUS_DOING)
+                .eq(XqWorkOrderDO::getRpaCopyStatus, "queued"));
     }
 
     @Override
@@ -736,6 +808,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
                 .gigaCategoryId(item.gigaCategoryId)
                 .status(WORK_STATUS_DOING)
                 .assigneeUserId(userId)
+                .copyUserId(userId)
                 .listingPlatformId(reqVO.getListingPlatformId())
                 .listingShopId(reqVO.getListingShopId())
                 .listingCategoryId(reqVO.getListingCategoryId())
@@ -749,6 +822,42 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
                 .build();
         workOrderMapper.insert(order);
         return order;
+    }
+
+    /** 快照 detail_json.xqPickedPlatforms；失败不影响下发 */
+    private void markSnapshotPicked(String sku, String platformId, String platformName) {
+        String id = jsonSafeKey(platformId);
+        if (StrUtil.isBlank(sku) || StrUtil.isBlank(id)) {
+            return;
+        }
+        try {
+            gigaProductMapper.mergePickedPlatform(sku.trim(), id,
+                    StrUtil.blankToDefault(platformName, id));
+        } catch (Exception ex) {
+            log.warn("[markSnapshotPicked] sku={} platform={} {}", sku, id, ex.getMessage());
+        }
+    }
+
+    private void unmarkSnapshotIfIdle(String sku, String platformId) {
+        String id = jsonSafeKey(platformId);
+        if (StrUtil.isBlank(sku) || StrUtil.isBlank(id)) {
+            return;
+        }
+        if (workOrderMapper.selectActiveBySkuAndPlatform(sku.trim(), platformId) != null) {
+            return;
+        }
+        try {
+            gigaProductMapper.removePickedPlatform(sku.trim(), id);
+        } catch (Exception ex) {
+            log.warn("[unmarkSnapshotIfIdle] sku={} platform={} {}", sku, id, ex.getMessage());
+        }
+    }
+
+    private static String jsonSafeKey(String raw) {
+        if (StrUtil.isBlank(raw)) {
+            return "";
+        }
+        return raw.trim().replaceAll("[^0-9A-Za-z_-]", "");
     }
 
     public void attachVariants(List<cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRespVO> list) {
@@ -844,6 +953,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     @Override
     public XqWorkOrderDO generateImage(Long id, Long userId) {
         XqWorkOrderDO order = validateDoing(id);
+        assertCanAccessImage(order, userId);
         if (!isCopyReady(order)) {
             throw exception(XQ_WORK_ORDER_COPY_REQUIRED);
         }
@@ -856,7 +966,145 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (reqVO == null || CollUtil.isEmpty(reqVO.getIds())) {
             throw exception(XQ_DISPATCH_EMPTY);
         }
+        // 先校验归属：只能入队自己可访问的图片任务，入队后仍挂在已分配美工名下
+        for (Long id : reqVO.getIds()) {
+            if (id == null) {
+                continue;
+            }
+            XqWorkOrderDO order = workOrderMapper.selectById(id);
+            if (order == null || !Integer.valueOf(10).equals(order.getStatus())) {
+                continue;
+            }
+            assertCanAccessImage(order, userId);
+        }
         return imagePipelineService.enqueueImageJobs(reqVO.getIds(), userId);
+    }
+
+    @Override
+    public XqWorkOrderReviseImageRespVO reviseImagePreview(XqWorkOrderReviseImageReqVO reqVO, Long userId) {
+        XqWorkOrderDO order = validateDoing(reqVO.getId());
+        assertCanAccessImage(order, userId);
+
+        int promptIndex = reqVO.getPromptIndex() == null ? 0 : Math.max(0, reqVO.getPromptIndex());
+        String revisePrompt = StrUtil.trim(reqVO.getRevisePrompt());
+        if (StrUtil.isBlank(revisePrompt)) {
+            throw exception(XQ_RPA_AI_FAIL, "请填写调整说明");
+        }
+
+        String currentAiUrl = resolvePromptAiUrl(order, promptIndex);
+        List<String> refs = new ArrayList<>();
+        if (CollUtil.isNotEmpty(reqVO.getReferenceUrls())) {
+            for (String u : reqVO.getReferenceUrls()) {
+                String url = StrUtil.trim(u);
+                if (StrUtil.isNotBlank(url) && !refs.contains(url)) {
+                    refs.add(url);
+                }
+            }
+        }
+        boolean includeCurrentAi = Boolean.TRUE.equals(reqVO.getIncludeCurrentAi());
+        if (includeCurrentAi && StrUtil.isNotBlank(currentAiUrl) && !refs.contains(currentAiUrl)) {
+            // 当前 AI 作底稿时放在首位，便于上游按第一张参考改图
+            refs.add(0, currentAiUrl);
+        }
+        if (refs.isEmpty()) {
+            throw exception(XQ_RPA_AI_FAIL,
+                    "请选择至少一张绑定参考图，或勾选「附带当前 AI 底稿」");
+        }
+
+        String originalPrompt = resolvePromptText(order, promptIndex);
+        StringBuilder prompt = new StringBuilder();
+        if (StrUtil.isNotBlank(originalPrompt)) {
+            prompt.append("【原提示词】\n").append(originalPrompt).append("\n\n");
+        }
+        prompt.append("【调整说明】\n").append(revisePrompt);
+        prompt.append("\n\n请在保持产品本体不变的前提下，按调整说明修改画面；生成结果将替换当前 AI 图位。");
+
+        List<Map<String, Object>> images = new ArrayList<>();
+        for (String url : refs) {
+            Map<String, Object> img = new LinkedHashMap<>();
+            img.put("url", url);
+            images.add(img);
+        }
+
+        XqRpaAiGenerateImageReqVO aiReq = new XqRpaAiGenerateImageReqVO();
+        aiReq.setPrompt(prompt.toString());
+        aiReq.setSku(StrUtil.blankToDefault(order.getProductSku(), String.valueOf(order.getId())));
+        aiReq.setImages(images);
+        aiReq.setLockProduct(reqVO.getLockProduct() == null || Boolean.TRUE.equals(reqVO.getLockProduct()));
+        aiReq.setReturnBase64(false);
+
+        Map<String, Object> gen = rpaAiService.generateImageForConsole(aiReq);
+        String previewUrl = StrUtil.trim(String.valueOf(gen.getOrDefault("url", "")));
+        if (StrUtil.isBlank(previewUrl) || "null".equalsIgnoreCase(previewUrl)) {
+            throw exception(XQ_RPA_AI_FAIL, "改图结果为空");
+        }
+
+        XqWorkOrderReviseImageRespVO resp = new XqWorkOrderReviseImageRespVO();
+        resp.setPreviewUrl(previewUrl);
+        resp.setCurrentAiUrl(currentAiUrl);
+        resp.setUsedReferenceUrls(refs);
+        resp.setPromptUsed(StrUtil.blankToDefault(String.valueOf(gen.getOrDefault("promptUsed", "")), prompt.toString()));
+        resp.setModel(StrUtil.blankToDefault(String.valueOf(gen.getOrDefault("model", "")), null));
+        Object cost = gen.get("costMs");
+        if (cost instanceof Number n) {
+            resp.setCostMs(n.longValue());
+        }
+        return resp;
+    }
+
+    private void assertCanAccessImage(XqWorkOrderDO order, Long userId) {
+        if (order == null) {
+            throw exception(XQ_WORK_ORDER_NOT_EXISTS);
+        }
+        if (userId == null) {
+            throw exception(XQ_WORK_ORDER_ACCESS_DENIED);
+        }
+        if (Objects.equals(order.getImageUserId(), userId)
+                || Objects.equals(order.getCopyUserId(), userId)
+                || Objects.equals(order.getAssigneeUserId(), userId)
+                || order.getImageUserId() == null) {
+            return;
+        }
+        throw exception(XQ_WORK_ORDER_ACCESS_DENIED);
+    }
+
+    private String resolvePromptAiUrl(XqWorkOrderDO order, int promptIndex) {
+        if (order == null) {
+            return "";
+        }
+        try {
+            JSONArray arr = JSONUtil.parseArray(StrUtil.blankToDefault(order.getImagePromptJson(), "[]"));
+            if (promptIndex >= 0 && promptIndex < arr.size()) {
+                JSONObject item = arr.getJSONObject(promptIndex);
+                if (item != null) {
+                    String url = StrUtil.blankToDefault(item.getStr("resultUrl"), item.getStr("generatedImageUrl"));
+                    if (StrUtil.isNotBlank(url)) {
+                        return url.trim();
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // ignore
+        }
+        return StrUtil.blankToDefault(order.getGeneratedImageUrl(), "");
+    }
+
+    private String resolvePromptText(XqWorkOrderDO order, int promptIndex) {
+        if (order == null || StrUtil.isBlank(order.getImagePromptJson())) {
+            return "";
+        }
+        try {
+            JSONArray arr = JSONUtil.parseArray(order.getImagePromptJson());
+            if (promptIndex >= 0 && promptIndex < arr.size()) {
+                JSONObject item = arr.getJSONObject(promptIndex);
+                if (item != null) {
+                    return StrUtil.blankToDefault(item.getStr("promptText"), "").trim();
+                }
+            }
+        } catch (Exception ignored) {
+            // ignore
+        }
+        return "";
     }
 
     @Override
@@ -1088,17 +1336,29 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         if (status == null) {
             throw exception(XQ_WORK_ORDER_IMAGE_STATUS_INVALID);
         }
-        if ("done".equals(status) && !isImageReady(order)) {
-            throw exception(XQ_WORK_ORDER_IMAGE_REQUIRED);
+        if ("done".equals(status)) {
+            // 审核确认：须图片与文案都齐全，才进入待上架
+            if (!isImageReady(order)) {
+                throw exception(XQ_WORK_ORDER_IMAGE_REQUIRED);
+            }
+            if (!isCopyReady(order)) {
+                throw exception(XQ_WORK_ORDER_COPY_REQUIRED);
+            }
         }
         if ("generated".equals(status) && !isImageReady(order)) {
             throw exception(XQ_WORK_ORDER_IMAGE_REQUIRED);
         }
-        // 撤回到待执行：清掉生图 RPA 执行态，便于重新入队
+        String rejectReason = StrUtil.trim(reqVO.getRejectReason());
+        if ("rejected".equals(status) && StrUtil.isBlank(rejectReason)) {
+            throw exception(XQ_WORK_ORDER_REJECT_REASON_REQUIRED);
+        }
+        // 撤回到待执行：清掉生图 RPA 执行态与驳回原因，便于重新入队
         if ("pending".equals(status) || "todo".equals(status)) {
             workOrderMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XqWorkOrderDO>()
                     .eq(XqWorkOrderDO::getId, order.getId())
                     .set(XqWorkOrderDO::getImageStatus, status)
+                    .set(XqWorkOrderDO::getImageRejectReason, null)
+                    .set(XqWorkOrderDO::getImagePromptJson, clearPromptRejectReasons(order.getImagePromptJson()))
                     .set(XqWorkOrderDO::getWorkflowPhase, "image")
                     .set(XqWorkOrderDO::getRpaImageStatus, null)
                     .set(XqWorkOrderDO::getRpaImageError, null)
@@ -1109,35 +1369,176 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         update.setId(order.getId());
         update.setImageStatus(status);
         update.setWorkflowPhase("done".equals(status) ? "list" : "image");
+        if ("rejected".equals(status)) {
+            String json = applyPromptRejectReason(order.getImagePromptJson(), reqVO.getRejectIndex(), rejectReason);
+            update.setImagePromptJson(json);
+            update.setImageRejectReason(StrUtil.maxLength(summarizePromptRejectReasons(json), 500));
+        } else if ("generated".equals(status) || "done".equals(status)) {
+            update.setImageRejectReason(null);
+            update.setImagePromptJson(clearPromptRejectReasons(order.getImagePromptJson()));
+        } else if ("revised".equals(status)) {
+            // 美工确认已改：按槽位清驳回；未传槽位则清全部。若仍有其它驳回则保持 rejected
+            Integer fixIndex = reqVO.getRejectIndex();
+            String json = fixIndex != null && fixIndex >= 0
+                    ? clearPromptRejectReasonAt(order.getImagePromptJson(), fixIndex)
+                    : clearPromptRejectReasons(order.getImagePromptJson());
+            update.setImagePromptJson(json);
+            String summary = summarizePromptRejectReasons(json);
+            if (StrUtil.isNotBlank(summary)) {
+                update.setImageRejectReason(StrUtil.maxLength(summary, 500));
+                update.setImageStatus("rejected");
+            } else {
+                update.setImageRejectReason(null);
+            }
+        }
         workOrderMapper.updateById(update);
     }
 
+    /** 把驳回原因写入指定槽位；未指定槽位则写入所有已出图槽位 */
+    private static String applyPromptRejectReason(String imagePromptJson, Integer rejectIndex, String reason) {
+        String text = StrUtil.maxLength(StrUtil.trim(reason), 200);
+        JSONArray arr;
+        try {
+            arr = JSONUtil.parseArray(StrUtil.blankToDefault(imagePromptJson, "[]"));
+        } catch (Exception ex) {
+            arr = new JSONArray();
+        }
+        if (rejectIndex != null && rejectIndex >= 0) {
+            while (arr.size() <= rejectIndex) {
+                JSONObject pad = new JSONObject();
+                pad.set("index", arr.size());
+                arr.add(pad);
+            }
+            JSONObject item = arr.getJSONObject(rejectIndex);
+            if (item == null) {
+                item = new JSONObject();
+                item.set("index", rejectIndex);
+                arr.set(rejectIndex, item);
+            }
+            item.set("rejectReason", text);
+        } else {
+            if (arr.isEmpty()) {
+                JSONObject item = new JSONObject();
+                item.set("index", 0);
+                item.set("rejectReason", text);
+                arr.add(item);
+            } else {
+                for (int i = 0; i < arr.size(); i++) {
+                    JSONObject item = arr.getJSONObject(i);
+                    if (item == null) {
+                        continue;
+                    }
+                    String url = StrUtil.blankToDefault(item.getStr("resultUrl"), item.getStr("generatedImageUrl"));
+                    if (StrUtil.isNotBlank(url)) {
+                        item.set("rejectReason", text);
+                    }
+                }
+            }
+        }
+        return arr.toString();
+    }
+
+    private static String clearPromptRejectReasons(String imagePromptJson) {
+        if (StrUtil.isBlank(imagePromptJson)) {
+            return imagePromptJson;
+        }
+        try {
+            JSONArray arr = JSONUtil.parseArray(imagePromptJson);
+            for (int i = 0; i < arr.size(); i++) {
+                JSONObject item = arr.getJSONObject(i);
+                if (item != null) {
+                    item.remove("rejectReason");
+                }
+            }
+            return arr.toString();
+        } catch (Exception ex) {
+            return imagePromptJson;
+        }
+    }
+
+    /** 清除指定槽位的驳回原因 */
+    private static String clearPromptRejectReasonAt(String imagePromptJson, int rejectIndex) {
+        if (StrUtil.isBlank(imagePromptJson) || rejectIndex < 0) {
+            return imagePromptJson;
+        }
+        try {
+            JSONArray arr = JSONUtil.parseArray(imagePromptJson);
+            if (rejectIndex < arr.size()) {
+                JSONObject item = arr.getJSONObject(rejectIndex);
+                if (item != null) {
+                    item.remove("rejectReason");
+                }
+            }
+            return arr.toString();
+        } catch (Exception ex) {
+            return imagePromptJson;
+        }
+    }
+
+    private static String summarizePromptRejectReasons(String imagePromptJson) {
+        if (StrUtil.isBlank(imagePromptJson)) {
+            return "";
+        }
+        try {
+            JSONArray arr = JSONUtil.parseArray(imagePromptJson);
+            List<String> parts = new ArrayList<>();
+            for (int i = 0; i < arr.size(); i++) {
+                JSONObject item = arr.getJSONObject(i);
+                if (item == null) {
+                    continue;
+                }
+                String reason = StrUtil.trim(item.getStr("rejectReason"));
+                if (StrUtil.isBlank(reason)) {
+                    continue;
+                }
+                parts.add("图" + (i + 1) + "：" + reason);
+            }
+            return String.join("；", parts);
+        } catch (Exception ex) {
+            return "";
+        }
+    }
+
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public Long listWorkOrder(XqWorkOrderListReqVO reqVO) {
+        // 导表路径会读 xq 库，不能套主库 @Transactional（否则 @DS("xq") 失效）
         XqWorkOrderDO order = validateDoing(reqVO.getId());
         if (!isListableImage(order)) {
             throw exception(XQ_WORK_ORDER_IMAGE_REQUIRED);
         }
-        java.util.Map<String, String> values =
-                reqVO.getValues() == null ? java.util.Map.of() : reqVO.getValues();
-        String mode = StrUtil.blankToDefault(reqVO.getListingMode(), "api").trim().toLowerCase();
+        Map<String, String> values =
+                reqVO.getValues() == null ? Map.of() : reqVO.getValues();
+        XqListingModeHelper.PlatformListingMeta meta =
+                listingModeHelper.resolveBySourceOrBusinessId(order.getListingPlatformId());
+        String requested = StrUtil.blankToDefault(reqVO.getListingMode(), meta.listingMode())
+                .trim().toLowerCase();
+        if (!requested.equals(meta.listingMode())) {
+            throw exception(XQ_LISTING_MODE_MISMATCH,
+                    XqListingModeHelper.MODE_EXPORT.equals(meta.listingMode()) ? "导表" : "API");
+        }
 
         XqWorkOrderDO snap = new XqWorkOrderDO();
         snap.setId(order.getId());
         snap.setListingValuesJson(JSONUtil.toJsonStr(values));
         snap.setWorkflowPhase("list");
 
-        // 无 API：导表成功 → 待用户确认是否上架
-        if ("export".equals(mode)) {
+        if (XqListingModeHelper.MODE_EXPORT.equals(requested)) {
+            XqListingExportResult exported = listingSplitExportService.exportWorkOrder(order, values);
             snap.setListingStatus("export_pending_confirm");
-            snap.setListingResultJson("{\"ok\":true,\"mode\":\"export\",\"message\":\"导表成功，待确认上架\"}");
+            snap.setListingResultJson(JSONUtil.toJsonStr(Map.of(
+                    "ok", true,
+                    "mode", "export",
+                    "filename", exported.getFilename(),
+                    "productCount", exported.getProductCount(),
+                    "message", "导表成功，待确认上架")));
             workOrderMapper.updateById(snap);
             return null;
         }
 
-        // 有 API：程序提交并判定成功上架
+        Map<String, Object> apiResult = publishViaApi(order, meta, values);
+        snap.setListingResultJson(JSONUtil.toJsonStr(apiResult));
         workOrderMapper.updateById(snap);
+
         XqWorkOrderCompleteReqVO complete = new XqWorkOrderCompleteReqVO();
         complete.setId(order.getId());
         complete.setProductSku(StrUtil.blankToDefault(reqVO.getProductSku(),
@@ -1150,9 +1551,60 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         XqWorkOrderDO result = new XqWorkOrderDO();
         result.setId(order.getId());
         result.setListingStatus("listed");
-        result.setListingResultJson("{\"ok\":true,\"mode\":\"api\",\"message\":\"API 上架成功\"}");
+        result.setListingResultJson(JSONUtil.toJsonStr(apiResult));
         workOrderMapper.updateById(result);
         return productId;
+    }
+
+    @Override
+    public XqListingExportResult exportListing(XqWorkOrderListReqVO reqVO) {
+        // 不在此开主库事务：导表要读 xq 库模板，@Transactional 会绑死 master 连接
+        XqWorkOrderDO order = validateDoing(reqVO.getId());
+        if (!isListableImage(order)) {
+            throw exception(XQ_WORK_ORDER_IMAGE_REQUIRED);
+        }
+        Map<String, String> values =
+                reqVO.getValues() == null ? Map.of() : reqVO.getValues();
+        XqListingModeHelper.PlatformListingMeta meta =
+                listingModeHelper.resolveBySourceOrBusinessId(order.getListingPlatformId());
+        if (!XqListingModeHelper.MODE_EXPORT.equals(meta.listingMode())) {
+            throw exception(XQ_LISTING_MODE_MISMATCH, "API");
+        }
+        XqListingExportResult exported = listingSplitExportService.exportWorkOrder(order, values);
+        XqWorkOrderDO snap = new XqWorkOrderDO();
+        snap.setId(order.getId());
+        snap.setListingValuesJson(JSONUtil.toJsonStr(values));
+        snap.setWorkflowPhase("list");
+        snap.setListingStatus("export_pending_confirm");
+        snap.setListingResultJson(JSONUtil.toJsonStr(Map.of(
+                "ok", true,
+                "mode", "export",
+                "filename", exported.getFilename(),
+                "productCount", exported.getProductCount(),
+                "message", "导表成功，待确认上架")));
+        workOrderMapper.updateById(snap);
+        return exported;
+    }
+
+    private Map<String, Object> publishViaApi(
+            XqWorkOrderDO order,
+            XqListingModeHelper.PlatformListingMeta meta,
+            Map<String, String> values) {
+        String provider = StrUtil.blankToDefault(meta.apiProvider(), "mirakl");
+        XqListingPlatformCredentialDO cred = null;
+        if (meta.platformId() != null) {
+            cred = listingCredentialService.getDecryptedForPlatform(meta.platformId(), provider);
+        }
+        if (cred == null && StrUtil.isNotBlank(meta.sourcePlatformId())) {
+            cred = listingCredentialService.getDecryptedBySource(meta.sourcePlatformId(), provider);
+        }
+        if (cred == null) {
+            throw exception(XQ_LISTING_CREDENTIAL_REQUIRED);
+        }
+        if (XqListingPlatformCredentialDO.PROVIDER_WAYFAIR.equals(provider)) {
+            return wayfairListingClient.publishProduct(cred, order, values);
+        }
+        return miraklListingClient.publishProduct(cred, order, values);
     }
 
     @Override

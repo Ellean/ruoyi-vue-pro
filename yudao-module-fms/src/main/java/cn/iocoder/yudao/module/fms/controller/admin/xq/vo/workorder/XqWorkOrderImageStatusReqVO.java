@@ -16,4 +16,10 @@ public class XqWorkOrderImageStatusReqVO {
     @Schema(description = "todo / rejected / revised / done")
     private String imageStatus;
 
+    @Schema(description = "驳回原因（imageStatus=rejected 时必填）")
+    private String rejectReason;
+
+    @Schema(description = "图片槽位（0-based）；rejected 时写入驳回，revised 时清除该槽驳回；空则作用于全部已出图槽位")
+    private Integer rejectIndex;
+
 }

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.iocoder.yudao.module.fms.dal.mysql.xq.XqAgentAiResultMapper">
+
+    <!-- 有 AI 图：与同步脚本 / 原库看板一致 -->
+    <sql id="HasAiImages">
+        agent_results_json IS NOT NULL
+        AND agent_results_json &lt;&gt; ''
+        AND agent_results_json &lt;&gt; 'null'
+        AND agent_results_json &lt;&gt; '{}'
+        AND agent_results_json &lt;&gt; '[]'
+        AND JSON_EXTRACT(agent_results_json, '$.images') IS NOT NULL
+        AND JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) &lt;&gt; 'NULL'
+        AND (
+          (
+            JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) = 'ARRAY'
+            AND JSON_LENGTH(JSON_EXTRACT(agent_results_json, '$.images')) &gt; 0
+          )
+          OR (
+            JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) = 'OBJECT'
+            AND JSON_LENGTH(JSON_EXTRACT(agent_results_json, '$.images')) &gt; 0
+          )
+        )
+    </sql>
+
+    <sql id="ImageCountExpr">
+        CASE
+          WHEN JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) = 'ARRAY'
+            THEN IFNULL(JSON_LENGTH(JSON_EXTRACT(agent_results_json, '$.images')), 0)
+          WHEN JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) = 'OBJECT'
+            AND JSON_LENGTH(JSON_EXTRACT(agent_results_json, '$.images')) &gt; 0 THEN 1
+          ELSE 0
+        END
+    </sql>
+
+    <sql id="CoverUrlExpr">
+        COALESCE(
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.images[0].displayUrl')), ''),
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.images[0].ossUrl')), ''),
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.images[0].url')), ''),
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.images[0].imageUrl')), '')
+        )
+    </sql>
+
+    <sql id="Filter">
+        <where>
+            <include refid="HasAiImages"/>
+            <if test="sku != null and sku != ''">
+                AND sku LIKE CONCAT('%', #{sku}, '%')
+            </if>
+            <if test="keyword != null and keyword != ''">
+                AND (
+                  sku LIKE CONCAT('%', #{keyword}, '%')
+                  OR product_name LIKE CONCAT('%', #{keyword}, '%')
+                )
+            </if>
+        </where>
+    </sql>
+
+    <select id="selectPageCount" resultType="long">
+        SELECT COUNT(*)
+        FROM t_gigab2b_product_list
+        <include refid="Filter"/>
+    </select>
+
+    <select id="selectPage" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqAgentAiResultRow">
+        SELECT
+            id,
+            sku,
+            product_name AS productName,
+            (<include refid="ImageCountExpr"/>) AS imageCount,
+            (<include refid="CoverUrlExpr"/>) AS coverUrl,
+            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.batchNo')), '') AS batchNo,
+            COALESCE(
+              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.generatedAt')), ''),
+              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.createdAt')), '')
+            ) AS generatedAt,
+            update_date AS updateDate
+        FROM t_gigab2b_product_list
+        <include refid="Filter"/>
+        ORDER BY update_date DESC, id DESC
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="selectById" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqAgentAiResultRow">
+        SELECT
+            id,
+            sku,
+            product_name AS productName,
+            (<include refid="ImageCountExpr"/>) AS imageCount,
+            (<include refid="CoverUrlExpr"/>) AS coverUrl,
+            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.batchNo')), '') AS batchNo,
+            COALESCE(
+              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.generatedAt')), ''),
+              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.createdAt')), '')
+            ) AS generatedAt,
+            update_date AS updateDate,
+            agent_results_json AS agentResultsJson
+        FROM t_gigab2b_product_list
+        WHERE id = #{id}
+        LIMIT 1
+    </select>
+
+</mapper>

@@ -63,7 +63,7 @@ public class XqWorkOrderPageReqVO extends PageParam {
     @Schema(description = "图片作业状态 todo/rejected/revised/done")
     private String imageStatus;
 
-    @Schema(description = "待上架：图片已出图/已完成且尚未提交")
+    @Schema(description = "待上架：已审核确认图文（imageStatus=done）且尚未提交")
     private Boolean listingReady;
 
     @Schema(description = "列表流程状态 assign/writing/review/submitted/closed")

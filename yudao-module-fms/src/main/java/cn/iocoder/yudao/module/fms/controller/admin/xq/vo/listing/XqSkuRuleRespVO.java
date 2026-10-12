@@ -21,4 +21,5 @@ public class XqSkuRuleRespVO {
     private List<Map<String, Object>> segments = new ArrayList<>();
     private Boolean enabled;
     private Boolean skipSku;
+    private Boolean isDefault;
 }

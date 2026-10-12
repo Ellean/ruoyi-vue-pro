@@ -24,6 +24,12 @@ public class XqListingPlatformDO {
     private Integer sortOrder;
     private Boolean enabled;
     private String remark;
+    /** excel_template / mirakl_api / wayfair_api … */
+    private String catalogSource;
+    private String splitPlatformKey;
+    private String miraklConfigJson;
+    private LocalDateTime miraklLastSyncAt;
+    private String wayfairConfigJson;
     private LocalDateTime createDate;
     private LocalDateTime updateDate;
 

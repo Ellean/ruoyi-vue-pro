@@ -25,6 +25,8 @@ public class XqPlatformSkuRuleDO {
     private String segmentsJson;
     private Boolean enabled;
     private Boolean skipSku;
+    /** 同店铺+运营下默认规则 */
+    private Boolean isDefault;
     private LocalDateTime createDate;
     private LocalDateTime updateDate;
 

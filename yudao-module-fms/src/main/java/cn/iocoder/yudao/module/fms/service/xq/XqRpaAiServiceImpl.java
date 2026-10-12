@@ -6,16 +6,23 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.iocoder.yudao.framework.common.enums.CommonStatusEnum;
+import cn.hutool.core.codec.Base64;
+import cn.hutool.http.HttpRequest;
+import cn.hutool.http.HttpResponse;
 import cn.iocoder.yudao.module.ai.dal.dataobject.model.AiApiKeyDO;
 import cn.iocoder.yudao.module.ai.dal.dataobject.model.AiModelDO;
 import cn.iocoder.yudao.module.ai.enums.model.AiModelTypeEnum;
 import cn.iocoder.yudao.module.ai.enums.model.AiPlatformEnum;
+import cn.iocoder.yudao.module.ai.framework.ai.core.model.openai.OpenAiCompatibleImageEditApi;
 import cn.iocoder.yudao.module.ai.service.model.AiApiKeyService;
 import cn.iocoder.yudao.module.ai.service.model.AiModelService;
 import cn.iocoder.yudao.module.ai.util.AiUtils;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiClassifyImagesReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiGenerateCopyReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiGenerateImageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiImagePromptsReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.rpa.XqRpaAiUploadImageReqVO;
+import cn.iocoder.yudao.module.infra.service.file.FileService;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -31,6 +38,7 @@ import org.springframework.validation.annotation.Validated;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -69,6 +77,8 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
     private AiModelService aiModelService;
     @Resource
     private AiApiKeyService aiApiKeyService;
+    @Resource
+    private FileService fileService;
 
     @Override
     public Map<String, Object> generateCopy(XqRpaAiGenerateCopyReqVO reqVO) {
@@ -90,27 +100,49 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
             return mockCopy(sku, title0, original, rule);
         }
 
+        Map<String, Object> copyPrompts = normalizeCopyPrompts(reqVO.getCopyPrompts());
+        boolean hasCopyPrompts = !copyPrompts.isEmpty();
         boolean regenerate = Boolean.TRUE.equals(reqVO.getRegenerate())
                 || StrUtil.isNotBlank(reqVO.getRevisionPrompt())
                 || (reqVO.getExistingCopy() != null && !reqVO.getExistingCopy().isEmpty());
         String revisionPrompt = StrUtil.blankToDefault(reqVO.getRevisionPrompt(), "");
+        // 无整段 revisionPrompt 时，把分项提示词拼成写作指引
+        if (StrUtil.isBlank(revisionPrompt) && hasCopyPrompts) {
+            revisionPrompt = buildRevisionFromCopyPrompts(copyPrompts);
+        }
         Map<String, Object> existingCopy = reqVO.getExistingCopy() == null
                 ? Map.of() : reqVO.getExistingCopy();
         String system = "你是亚马逊/跨境电商文案优化助手。文案生成与图片提示词生成是两个独立概念："
                 + "本任务只生成文案，不写生图提示词。"
                 + "只输出一个完整 JSON，禁止截断、禁止 markdown。"
-                + "字段：{\"title\":\"完整英文标题\",\"sellingPoints\":[\"完整英文句子\"],"
+                // 卖点放最前：即使后半 description 被截断，也能先解析到 sellingPoints
+                + "字段顺序必须是：{\"sellingPoints\":[\"完整英文句子\"],\"title\":\"完整英文标题\","
                 + "\"description\":\"完整英文长描述\",\"highlightStyle\":[\"中文特征点\"]}。"
-                + "输入优先：1) originalCopy 原文案；2) productTitle；3) 可选 imageObservations（可能为空，勿强依赖）。"
+                + "输入优先：1) originalCopy 原文案；2) productTitle；3) 可选 imageObservations（可能为空，勿强依赖）；"
+                + "4) 可选 copyPrompts 分项写作提示词（title/features/description）。"
                 + "必须依据原文案与标题写 title/sellingPoints/description；没有识图结果时不要编造图上看不到的材质、配件、尺寸、认证。"
-                + "title、sellingPoints、description 必须是完整英文句子，以句号结尾。"
-                + "sellingPoints 条数必须等于指定卖点数（5 或 8，按 rules）。"
-                + "description 4到8句、不少于80个英文单词。"
-                + "highlightStyle 是给后续生图用的中文特征点：4 到 8 个中文短标签（每项 2 到 8 字），"
-                + "综合原文案与标题提炼材质/外形/场景/工艺特征；禁止英文、禁止整句。"
-                + "不要输出 imagePrompts，不要按全套图逐张描述。";
+                + "三段文案都必须遵守各自规则：rules.titleLayout、rules.descriptionLayout、rules.featureLayout，以及 rules.hints。"
+                + "可参考各 layout.example 作为输出结构样板。"
+                + "sellingPoints：最先输出；条数必须等于 featureCount；每条尽量 ≤220 字符；若 featureLayout.splitTitleContent=true，"
+                + "每条格式为 \"ShortTitle\" + separator + \"完整英文内容句\"（如 Easy Touch Control: ...）；"
+                + "否则每条为完整英文句并以句号结尾；遵守 featureTitleMaxLen / featureContentMaxLen。"
+                + "title：英文标题，字数在 titleMinLen～titleMaxLen；若 titleNoPunctuation=true 则不要逗号/句号等标点。"
+                + "description：纯文本（字符串内用 \\n 换行，不要 markdown 代码块）；控制在 900 词内。"
+                + "若 descriptionLayout.mode=paragraph：只写 4～8 句营销段落，不要规格块。"
+                + "否则（amazonLong）：先写 2～4 句导语；空一行；写 specsHeading；"
+                + "再写 \"- Key: Value\" 规格行（minSpecItems～maxSpecItems）；"
+                + "includeImportantNotes=true 时再追加 notesHeading 与注意事项。"
+                + "规格只能来自原文案/标题可核实属性，禁止编造。"
+                + "highlightStyle：4～8 个中文短标签（2～8 字），禁止英文与整句。"
+                + "不要输出 imagePrompts。";
         String target = StrUtil.blankToDefault(reqVO.getTarget(), "all").trim().toLowerCase();
         Integer featureIndex = reqVO.getFeatureIndex();
+        if (hasCopyPrompts) {
+            system += "若提供 copyPrompts：写 title 时遵守 copyPrompts.title；"
+                    + "写 sellingPoints[i] 时遵守 copyPrompts.features[i]（有则用）；"
+                    + "写 description 时遵守 copyPrompts.description。提示词是写作要求不是最终英文成品，"
+                    + "仍须输出合规的英文 title/sellingPoints/description。";
+        }
         if (regenerate) {
             system += "这是二次改写任务：必须参考 existingCopy（当前标题/卖点/长描述）和 revisionPrompt（用户提示词）。";
             if ("title".equals(target)) {
@@ -128,9 +160,12 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         user.put("productTitle", title0);
         user.put("originalCopy", StrUtil.maxLength(original, 4000));
         user.put("regenerate", regenerate);
-        user.put("revisionPrompt", StrUtil.maxLength(revisionPrompt, 2000));
+        user.put("revisionPrompt", StrUtil.maxLength(revisionPrompt, 4000));
         user.put("existingCopy", existingCopy);
         user.put("target", target);
+        if (hasCopyPrompts) {
+            user.put("copyPrompts", copyPrompts);
+        }
         if (featureIndex != null) {
             user.put("featureIndex", featureIndex);
         }
@@ -138,33 +173,62 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         user.put("imageObservations", slimObservations(observations));
         user.put("sourceImageCount", sourceImages.size());
         user.put("featureCount", rule.featureCount);
-        // 不传 fullConfig：整份文案规则 JSON 很大，会拖慢中转与模型
-        user.put("rules", Map.of(
-                "generateTitle", rule.generateTitle,
-                "titleMaxLen", rule.titleMaxLen,
-                "descriptionMaxLen", rule.descriptionMaxLen,
-                "featureMaxLen", rule.featureMaxLen,
-                "allowedFeatureCounts", rule.allowedFeatureCounts
-        ));
+        // 传精简规则：含各段 hint + 描述规格版式（不传整份 raw JSON）
+        user.put("rules", buildCopyRulesPayload(rule));
         user.put("imageCount", CollUtil.size(reqVO.getSourceImages()));
 
-        // 8 条卖点 + 长描述约需 2.5k～3k；过小易截断成只有 title
-        String raw = chat(system, JSONUtil.toJsonStr(user), 3072);
+        // 8 条卖点 + 长描述英文成品常超 3k tokens；过小会截断成半截 JSON，解析后卖点为空
+        String raw = chat(system, JSONUtil.toJsonStr(user), 6144);
         JSONObject parsed = extractJsonObject(raw);
-        List<String> points = normalizePoints(parsed.get("sellingPoints"));
-        if (points.isEmpty()) {
-            points = normalizePoints(parsed.get("bulletPoints"));
-        }
-        String title = clipAtSentence(StrUtil.blankToDefault(parsed.getStr("title"), title0), rule.titleMaxLen);
-        String desc = clipAtSentence(StrUtil.blankToDefault(parsed.getStr("description"), ""),
+        List<String> points = pickSellingPoints(parsed, raw);
+        String title = clipAtSentence(StrUtil.blankToDefault(firstStr(parsed, "title", "productTitle"), title0),
+                rule.titleMaxLen);
+        String desc = clipAtSentence(
+                StrUtil.blankToDefault(firstStr(parsed, "description", "longDescription", "desc"), ""),
                 Math.max(rule.descriptionMaxLen, 2000));
         // 全量生成时禁止用 Key benefit 占位冒充成功（模型截断/空卖点）
         boolean fullGenerate = !regenerate || "all".equals(target);
+        if (fullGenerate && (points.isEmpty() || StrUtil.isBlank(desc))) {
+            log.warn("[generateCopy] incomplete sku={} points={} descLen={} keys={} rawTail={}",
+                    sku, points.size(), StrUtil.length(desc), parsed.keySet(),
+                    StrUtil.maxLength(StrUtil.blankToDefault(raw, ""), 500));
+            // 自动补全一次：只要求补齐缺失字段，避免整篇重跑
+            String fixSystem = "你是 JSON 修复器。根据 previous 半截结果与产品信息，输出完整合法 JSON，"
+                    + "字段顺序：sellingPoints,title,description,highlightStyle。"
+                    + "sellingPoints 条数必须等于 featureCount；禁止 markdown；禁止截断。";
+            Map<String, Object> fixUser = new LinkedHashMap<>();
+            fixUser.put("featureCount", rule.featureCount);
+            fixUser.put("productTitle", title0);
+            fixUser.put("originalCopy", StrUtil.maxLength(original, 2500));
+            fixUser.put("previous", StrUtil.maxLength(raw, 5000));
+            fixUser.put("needSellingPoints", points.isEmpty());
+            fixUser.put("needDescription", StrUtil.isBlank(desc));
+            String fixedRaw = chat(fixSystem, JSONUtil.toJsonStr(fixUser), 4096);
+            JSONObject fixed = extractJsonObject(fixedRaw);
+            if (points.isEmpty()) {
+                points = pickSellingPoints(fixed, fixedRaw);
+            }
+            if (StrUtil.isBlank(title)) {
+                title = clipAtSentence(firstStr(fixed, "title", "productTitle"), rule.titleMaxLen);
+            }
+            if (StrUtil.isBlank(desc)) {
+                desc = clipAtSentence(firstStr(fixed, "description", "longDescription", "desc"),
+                        Math.max(rule.descriptionMaxLen, 2000));
+            }
+            if (!fixed.isEmpty()) {
+                parsed = fixed;
+                raw = fixedRaw;
+            }
+        }
         if (fullGenerate) {
             if (points.isEmpty()) {
+                log.warn("[generateCopy] empty sellingPoints after retry sku={} rawHead={}",
+                        sku, StrUtil.maxLength(StrUtil.blankToDefault(raw, ""), 400));
                 throw exception(XQ_RPA_AI_FAIL, "模型未返回卖点（可能被截断），请重试或换更快模型");
             }
             if (StrUtil.isBlank(desc)) {
+                log.warn("[generateCopy] empty description after retry sku={} rawHead={}",
+                        sku, StrUtil.maxLength(StrUtil.blankToDefault(raw, ""), 400));
                 throw exception(XQ_RPA_AI_FAIL, "模型未返回长描述（可能被截断），请重试或换更快模型");
             }
         }
@@ -482,12 +546,303 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         return out;
     }
 
+    @Override
+    public Map<String, Object> generateImage(XqRpaAiGenerateImageReqVO reqVO) {
+        assertToken(reqVO == null ? null : reqVO.getCallbackToken());
+        return doGenerateImage(reqVO);
+    }
+
+    @Override
+    public Map<String, Object> generateImageForConsole(XqRpaAiGenerateImageReqVO reqVO) {
+        // 管理端登录态：主 API 同步等待上游（过渡），单图改图预览用
+        return doGenerateImage(reqVO);
+    }
+
+    private Map<String, Object> doGenerateImage(XqRpaAiGenerateImageReqVO reqVO) {
+        String prompt = StrUtil.trim(reqVO == null ? null : reqVO.getPrompt());
+        if (StrUtil.isBlank(prompt)) {
+            throw exception(XQ_RPA_AI_FAIL, "提示词为空");
+        }
+        boolean lockProduct = reqVO.getLockProduct() == null || Boolean.TRUE.equals(reqVO.getLockProduct());
+        List<Map<String, Object>> images = CollUtil.emptyIfNull(reqVO.getImages());
+        RefImage ref = pickFirstRef(images);
+        if (ref == null || (ref.bytes == null && StrUtil.isBlank(ref.url))) {
+            throw exception(XQ_RPA_AI_FAIL, "请至少提供一张参考图（base64 或 url）");
+        }
+        String finalPrompt = lockProduct
+                ? "【产品锁死】必须保持参考图中产品的外形、颜色、结构、比例、材质特征不变，禁止换成其它品类商品。\n\n" + prompt
+                : prompt;
+
+        AiApiKeyDO key = pickImageApiKey();
+        if (key == null) {
+            throw exception(XQ_RPA_AI_FAIL,
+                    "未找到可用生图 API。请到【API 密钥】启用带 image_gen/image_edit 的密钥，并填写「生图模型」");
+        }
+        String model = StrUtil.blankToDefault(key.getImageEditModel(), key.getImageModel());
+        long start = System.currentTimeMillis();
+        try {
+            // ToAPIs：参考图须其可访问的公网 URL（文档禁止 base64）；本地/内网 URL 会在
+            // OpenAiCompatibleImageEditApi 内先 POST /v1/uploads/images 再 generations。
+            // 其它网关：multipart /images/edits 吃 bytes。
+            String referUrl = ref.url;
+            byte[] referBytes = ref.bytes;
+            if ((referBytes == null || referBytes.length == 0) && StrUtil.isNotBlank(referUrl)) {
+                referBytes = downloadBytes(referUrl);
+            }
+            OpenAiCompatibleImageEditApi.EditResult edit = OpenAiCompatibleImageEditApi.edit(
+                    key, model, finalPrompt, 2000, 2000, referUrl, referBytes);
+            byte[] outBytes = null;
+            String outUrl = StrUtil.blankToDefault(edit.getUrl(), "");
+            if (StrUtil.isNotBlank(edit.getB64Json())) {
+                outBytes = Base64.decode(edit.getB64Json());
+            } else if (StrUtil.isNotBlank(outUrl)) {
+                outBytes = downloadBytes(outUrl);
+            }
+            if (outBytes == null || outBytes.length == 0) {
+                throw exception(XQ_RPA_AI_FAIL, "生图结果为空");
+            }
+            // 以实际产物字节为准（GPT Image 常回 PNG，勿沿用参考图 jpg 后缀）
+            String mime = detectImageMime(outBytes, guessMime(ref.mimeType, outUrl));
+            String ext = mimeToExt(mime);
+            String fileName = "xq_rpa_" + StrUtil.blankToDefault(reqVO.getSku(), "img")
+                    + "_" + System.currentTimeMillis() + "." + ext;
+            String storedUrl = fileService.createFile(outBytes, fileName, "xq/rpa/gen", mime);
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("url", storedUrl);
+            data.put("mimeType", mime);
+            data.put("extension", ext);
+            data.put("sku", StrUtil.blankToDefault(reqVO.getSku(), ""));
+            data.put("model", StrUtil.blankToDefault(edit.getModel(), model));
+            data.put("costMs", System.currentTimeMillis() - start);
+            data.put("promptUsed", finalPrompt);
+            if (Boolean.TRUE.equals(reqVO.getReturnBase64())) {
+                data.put("contentBase64", Base64.encode(outBytes));
+            }
+            log.info("[rpa-ai-generate-image] ok sku={} keyId={} costMs={} url={}",
+                    reqVO.getSku(), key.getId(), data.get("costMs"), StrUtil.maxLength(storedUrl, 120));
+            return data;
+        } catch (RuntimeException ex) {
+            log.warn("[rpa-ai-generate-image] fail sku={} err={}", reqVO.getSku(), ex.getMessage());
+            throw exception(XQ_RPA_AI_FAIL, StrUtil.blankToDefault(ex.getMessage(), "生图失败"));
+        }
+    }
+
+    @Override
+    public Map<String, Object> uploadImage(XqRpaAiUploadImageReqVO reqVO) {
+        assertToken(reqVO == null ? null : reqVO.getCallbackToken());
+        byte[] bytes = decodeBase64Image(reqVO == null ? null : reqVO.getContentBase64());
+        if (bytes == null || bytes.length == 0) {
+            throw exception(XQ_RPA_AI_FAIL, "图片内容为空");
+        }
+        String mime = detectImageMime(bytes, StrUtil.blankToDefault(reqVO.getMimeType(), "image/jpeg"));
+        String ext = mimeToExt(mime);
+        String name = StrUtil.blankToDefault(reqVO.getFileName(), "");
+        if (StrUtil.isBlank(name)) {
+            name = "xq_rpa_" + StrUtil.blankToDefault(reqVO.getSku(), "img")
+                    + "_" + System.currentTimeMillis() + "." + ext;
+        } else {
+            name = ensureExt(name, ext);
+        }
+        String url = fileService.createFile(bytes, name, "xq/rpa/upload", mime);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("url", url);
+        data.put("objectKey", name);
+        data.put("name", name);
+        data.put("mimeType", mime);
+        data.put("size", bytes.length);
+        data.put("sku", StrUtil.blankToDefault(reqVO.getSku(), ""));
+        data.put("storage", "infra");
+        return data;
+    }
+
     // ---------- helpers ----------
 
     private void assertToken(String token) {
         if (!StrUtil.equals(callbackToken, StrUtil.blankToDefault(token, ""))) {
             throw exception(XQ_RPA_TRIGGER_FAIL, "回调 token 无效");
         }
+    }
+
+    private AiApiKeyDO pickImageApiKey() {
+        List<AiApiKeyDO> keys = CollUtil.emptyIfNull(aiApiKeyService.getApiKeyList());
+        AiApiKeyDO fallback = null;
+        for (AiApiKeyDO key : keys) {
+            if (key == null || !CommonStatusEnum.ENABLE.getStatus().equals(key.getStatus())) {
+                continue;
+            }
+            if (StrUtil.isBlank(key.getApiKey()) || StrUtil.isBlank(key.getUrl())) {
+                continue;
+            }
+            String model = StrUtil.blankToDefault(key.getImageEditModel(), key.getImageModel());
+            if (StrUtil.isBlank(model)) {
+                continue;
+            }
+            String caps = StrUtil.blankToDefault(key.getCapabilities(), "").toLowerCase(Locale.ROOT);
+            if (caps.contains("image_edit") || caps.contains("image_gen") || caps.contains("image")) {
+                return key;
+            }
+            if (fallback == null) {
+                fallback = key;
+            }
+        }
+        return fallback;
+    }
+
+    private static RefImage pickFirstRef(List<Map<String, Object>> images) {
+        for (Map<String, Object> item : images) {
+            if (item == null) {
+                continue;
+            }
+            RefImage ref = new RefImage();
+            ref.fileName = StrUtil.blankToDefault(str(item.get("fileName")), str(item.get("name")));
+            if (StrUtil.isBlank(ref.fileName)) {
+                ref.fileName = "ref.jpg";
+            }
+            ref.mimeType = StrUtil.blankToDefault(str(item.get("mimeType")), str(item.get("mime")));
+            if (StrUtil.isBlank(ref.mimeType)) {
+                ref.mimeType = "image/jpeg";
+            }
+            ref.url = str(item.get("url"));
+            String b64 = StrUtil.blankToDefault(str(item.get("contentBase64")),
+                    StrUtil.blankToDefault(str(item.get("base64")), str(item.get("data"))));
+            if (StrUtil.isNotBlank(b64)) {
+                ref.bytes = decodeBase64Image(b64);
+            }
+            if (ref.bytes != null || StrUtil.startWithAny(ref.url, "http://", "https://")) {
+                return ref;
+            }
+        }
+        return null;
+    }
+
+    private static byte[] decodeBase64Image(String raw) {
+        String text = StrUtil.blankToDefault(raw, "").trim();
+        if (StrUtil.isBlank(text)) {
+            return null;
+        }
+        int comma = text.indexOf("base64,");
+        if (comma >= 0) {
+            text = text.substring(comma + "base64,".length());
+        }
+        try {
+            return Base64.decode(text);
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private static byte[] downloadBytes(String url) {
+        HttpResponse resp = HttpRequest.get(url).timeout(120_000).execute();
+        try {
+            if (resp.getStatus() >= 400) {
+                throw new IllegalArgumentException("下载参考图失败 HTTP " + resp.getStatus());
+            }
+            return resp.bodyBytes();
+        } finally {
+            resp.close();
+        }
+    }
+
+    private static String guessMime(String fallback, String url) {
+        String u = StrUtil.blankToDefault(url, "").toLowerCase(Locale.ROOT);
+        if (u.contains(".png")) {
+            return "image/png";
+        }
+        if (u.contains(".webp")) {
+            return "image/webp";
+        }
+        if (u.contains(".gif")) {
+            return "image/gif";
+        }
+        if (u.contains(".jpg") || u.contains(".jpeg")) {
+            return "image/jpeg";
+        }
+        return StrUtil.blankToDefault(fallback, "image/png");
+    }
+
+    /**
+     * 按魔数识别图片 MIME，保证与 FileService「后缀 vs 内容」校验一致。
+     */
+    private static String detectImageMime(byte[] bytes, String fallback) {
+        if (bytes != null && bytes.length >= 3) {
+            // PNG
+            if (bytes.length >= 8
+                    && (bytes[0] & 0xFF) == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) {
+                return "image/png";
+            }
+            // JPEG
+            if ((bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xFF) == 0xD8 && (bytes[2] & 0xFF) == 0xFF) {
+                return "image/jpeg";
+            }
+            // GIF
+            if (bytes.length >= 6
+                    && bytes[0] == 'G' && bytes[1] == 'I' && bytes[2] == 'F') {
+                return "image/gif";
+            }
+            // WEBP: RIFF....WEBP
+            if (bytes.length >= 12
+                    && bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F'
+                    && bytes[8] == 'W' && bytes[9] == 'E' && bytes[10] == 'B' && bytes[11] == 'P') {
+                return "image/webp";
+            }
+            // BMP
+            if (bytes[0] == 'B' && bytes[1] == 'M') {
+                return "image/bmp";
+            }
+        }
+        String fb = StrUtil.blankToDefault(fallback, "").toLowerCase(Locale.ROOT);
+        if (fb.contains("png") || fb.contains("jpeg") || fb.contains("jpg")
+                || fb.contains("webp") || fb.contains("gif") || fb.contains("bmp")) {
+            if (fb.contains("jpg") && !fb.contains("jpeg")) {
+                return "image/jpeg";
+            }
+            return fb.startsWith("image/") ? fb : "image/" + fb;
+        }
+        return "image/png";
+    }
+
+    private static String mimeToExt(String mime) {
+        String m = StrUtil.blankToDefault(mime, "").toLowerCase(Locale.ROOT);
+        if (m.contains("png")) {
+            return "png";
+        }
+        if (m.contains("webp")) {
+            return "webp";
+        }
+        if (m.contains("gif")) {
+            return "gif";
+        }
+        if (m.contains("bmp")) {
+            return "bmp";
+        }
+        return "jpg";
+    }
+
+    /** 强制文件名后缀与真实 MIME 一致（替换错误后缀）。 */
+    private static String ensureExt(String fileName, String ext) {
+        String name = StrUtil.blankToDefault(fileName, "img");
+        String e = StrUtil.blankToDefault(ext, "jpg").replace(".", "");
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) {
+            name = name.substring(0, dot);
+        }
+        // 去掉路径残留
+        name = name.replace('\\', '/');
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) {
+            name = name.substring(slash + 1);
+        }
+        if (StrUtil.isBlank(name)) {
+            name = "img";
+        }
+        return name + "." + e;
+    }
+
+    private static final class RefImage {
+        private byte[] bytes;
+        private String url;
+        private String mimeType;
+        private String fileName;
     }
 
     private boolean useMock(Boolean reqMock) {
@@ -601,6 +956,69 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
                 || name.contains("flux")
                 || name.contains("imagen")
                 || name.contains("image-edit");
+    }
+
+    /** 规范化分项提示词：空字段丢弃 */
+    private static Map<String, Object> normalizeCopyPrompts(Map<String, Object> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (raw == null || raw.isEmpty()) {
+            return out;
+        }
+        String title = StrUtil.trim(str(raw.get("title")));
+        if (StrUtil.isNotBlank(title)) {
+            out.put("title", StrUtil.maxLength(title, 2000));
+        }
+        String description = StrUtil.trim(str(raw.get("description")));
+        if (StrUtil.isNotBlank(description)) {
+            out.put("description", StrUtil.maxLength(description, 4000));
+        }
+        Object featuresObj = raw.get("features");
+        List<String> features = new ArrayList<>();
+        if (featuresObj instanceof List<?> list) {
+            for (Object item : list) {
+                String s = StrUtil.trim(str(item));
+                if (StrUtil.isNotBlank(s)) {
+                    features.add(StrUtil.maxLength(s, 1000));
+                } else {
+                    features.add("");
+                }
+            }
+        } else if (featuresObj instanceof Map<?, ?> map) {
+            for (int i = 1; i <= 8; i++) {
+                Object v = map.get("feature" + i);
+                if (v == null) {
+                    v = map.get(String.valueOf(i));
+                }
+                String s = StrUtil.trim(str(v));
+                features.add(StrUtil.isNotBlank(s) ? StrUtil.maxLength(s, 1000) : "");
+            }
+        }
+        if (features.stream().anyMatch(StrUtil::isNotBlank)) {
+            out.put("features", features);
+        }
+        return out;
+    }
+
+    private static String buildRevisionFromCopyPrompts(Map<String, Object> copyPrompts) {
+        StringBuilder sb = new StringBuilder();
+        String title = str(copyPrompts.get("title"));
+        if (StrUtil.isNotBlank(title)) {
+            sb.append("【标题提示词】\n").append(title).append("\n\n");
+        }
+        Object featuresObj = copyPrompts.get("features");
+        if (featuresObj instanceof List<?> list) {
+            for (int i = 0; i < list.size(); i++) {
+                String f = StrUtil.trim(str(list.get(i)));
+                if (StrUtil.isNotBlank(f)) {
+                    sb.append("【卖点").append(i + 1).append("提示词】\n").append(f).append("\n\n");
+                }
+            }
+        }
+        String description = str(copyPrompts.get("description"));
+        if (StrUtil.isNotBlank(description)) {
+            sb.append("【长描述提示词】\n").append(description).append("\n");
+        }
+        return sb.toString().trim();
     }
 
     private static String resolveAiErrorDetail(Throwable error) {
@@ -741,20 +1159,143 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         if (limits == null) {
             limits = new JSONObject();
         }
+        JSONObject hints = cfg.getJSONObject("hints");
+        if (hints == null) {
+            hints = new JSONObject();
+        }
+        JSONObject layout = cfg.getJSONObject("descriptionLayout");
+        if (layout == null) {
+            layout = new JSONObject();
+        }
+        JSONObject punct = cfg.getJSONObject("punctuation");
+        if (punct == null) {
+            punct = new JSONObject();
+        }
         CopyRule rule = new CopyRule();
         rule.featureCount = cfg.getInt("defaultFeatureCount", 5);
         Object allowed = cfg.get("allowedFeatureCounts");
         if (allowed instanceof List<?> list && !list.isEmpty()) {
             rule.allowedFeatureCounts = list;
         } else {
-            rule.allowedFeatureCounts = List.of(5, 8);
+            rule.allowedFeatureCounts = List.of(5, 6, 8, 9);
         }
         rule.generateTitle = cfg.getBool("generateTitle", true);
         rule.titleMaxLen = limits.getInt("titleMaxLen", 200);
+        rule.titleMinLen = limits.getInt("titleMinLen", 0);
         rule.descriptionMaxLen = limits.getInt("descriptionMaxLen", 2000);
+        rule.descriptionMinLen = limits.getInt("descriptionMinLen", 0);
         rule.featureMaxLen = limits.getInt("featureMaxLen", 200);
+        rule.featureMinLen = limits.getInt("featureMinLen", 0);
+        rule.featureTitleMaxLen = limits.getInt("featureTitleMaxLen", 60);
+        rule.featureContentMaxLen = limits.getInt("featureContentMaxLen", 400);
+        rule.titleHint = StrUtil.blankToDefault(hints.getStr("title"),
+                StrUtil.blankToDefault(cfg.getStr("titleHint"), ""));
+        rule.descriptionHint = StrUtil.blankToDefault(hints.getStr("description"),
+                StrUtil.blankToDefault(cfg.getStr("descriptionHint"), ""));
+        rule.featureHint = StrUtil.blankToDefault(hints.getStr("feature"),
+                StrUtil.blankToDefault(cfg.getStr("featureHint"), ""));
+        rule.descMode = StrUtil.blankToDefault(layout.getStr("mode"), "amazonLong");
+        rule.specsHeading = StrUtil.blankToDefault(layout.getStr("specsHeading"), "Product Specifications:");
+        rule.notesHeading = StrUtil.blankToDefault(layout.getStr("notesHeading"), "Important Notes:");
+        rule.minSpecItems = layout.getInt("minSpecItems", 5);
+        rule.maxSpecItems = layout.getInt("maxSpecItems", 12);
+        rule.includeImportantNotes = layout.getBool("includeImportantNotes", false);
+        rule.titleNoPunctuation = punct.getJSONObject("title") != null
+                && punct.getJSONObject("title").getBool("noPunctuation", false);
+        rule.featureNoPunctuation = punct.getJSONObject("feature") != null
+                && punct.getJSONObject("feature").getBool("noPunctuation", false);
+        JSONObject mode5 = cfg.getJSONObject("mode5");
+        JSONObject mode8 = cfg.getJSONObject("mode8");
+        if (mode5 == null) {
+            mode5 = new JSONObject();
+        }
+        if (mode8 == null) {
+            mode8 = new JSONObject();
+        }
+        // 按条数选择生效的卖点模式（与前端一致：>=7 用 mode8）
+        JSONObject activeMode = rule.featureCount >= 7 ? mode8 : mode5;
+        rule.featureSplitTitleContent = activeMode.getBool("splitTitleContent", rule.featureCount < 7);
+        rule.featureRequireColon = activeMode.getBool("requireColon", rule.featureSplitTitleContent);
+        rule.featureSeparator = StrUtil.blankToDefault(activeMode.getStr("separator"), ": ");
+        rule.featureTitleHint = StrUtil.blankToDefault(activeMode.getStr("titleHint"), "Short Benefit Title");
         rule.raw = cfg;
         return rule;
+    }
+
+    /** 精简规则：三段均含 hint + layout.example + 字数/标点。 */
+    private static Map<String, Object> buildCopyRulesPayload(CopyRule rule) {
+        Map<String, Object> hints = new LinkedHashMap<>();
+        hints.put("title", rule.titleHint);
+        hints.put("description", rule.descriptionHint);
+        hints.put("feature", rule.featureHint);
+
+        Map<String, Object> titleLayout = new LinkedHashMap<>();
+        titleLayout.put("noPunctuation", rule.titleNoPunctuation);
+        titleLayout.put("minLen", rule.titleMinLen);
+        titleLayout.put("maxLen", rule.titleMaxLen);
+        titleLayout.put("example", rule.titleNoPunctuation
+                ? "Touch Kitchen Faucet Brushed Nickel Pull Down Sprayer for Modern Kitchen Sink"
+                : "Touch Kitchen Faucet with Pull-Down Sprayer, Brushed Nickel Finish.");
+
+        Map<String, Object> descLayout = new LinkedHashMap<>();
+        descLayout.put("mode", rule.descMode);
+        descLayout.put("specsHeading", rule.specsHeading);
+        descLayout.put("notesHeading", rule.notesHeading);
+        descLayout.put("minSpecItems", rule.minSpecItems);
+        descLayout.put("maxSpecItems", rule.maxSpecItems);
+        descLayout.put("includeImportantNotes", rule.includeImportantNotes);
+        if ("paragraph".equalsIgnoreCase(rule.descMode)) {
+            descLayout.put("example",
+                    "Upgrade your daily kitchen routine with this touch kitchen faucet. "
+                            + "Enjoy effortless control and a clean modern look.");
+        } else {
+            descLayout.put("example",
+                    "Upgrade your daily kitchen routine with this touch kitchen faucet...\n\n"
+                            + rule.specsHeading + "\n"
+                            + "- Finish: Brushed Nickel\n"
+                            + "- Body Material: Metal");
+        }
+
+        Map<String, Object> featureLayout = new LinkedHashMap<>();
+        featureLayout.put("count", rule.featureCount);
+        featureLayout.put("splitTitleContent", rule.featureSplitTitleContent);
+        featureLayout.put("requireColon", rule.featureRequireColon);
+        featureLayout.put("separator", rule.featureSeparator);
+        featureLayout.put("titleHint", rule.featureTitleHint);
+        featureLayout.put("titleMaxLen", rule.featureTitleMaxLen);
+        featureLayout.put("contentMaxLen", rule.featureContentMaxLen);
+        featureLayout.put("noPunctuation", rule.featureNoPunctuation);
+        if (rule.featureSplitTitleContent) {
+            featureLayout.put("example",
+                    "Easy Touch Control" + rule.featureSeparator
+                            + "Flow starts and stops with a light tap for hands-free convenience.\n"
+                            + "Durable Metal Body" + rule.featureSeparator
+                            + "Built for daily kitchen use with a lasting brushed finish.");
+        } else {
+            featureLayout.put("example",
+                    "Start and stop water flow with a light touch for convenient hands-free use.\n"
+                            + "Durable metal body with brushed nickel finish suits modern kitchens.");
+        }
+
+        Map<String, Object> rules = new LinkedHashMap<>();
+        rules.put("generateTitle", rule.generateTitle);
+        rules.put("featureCount", rule.featureCount);
+        rules.put("allowedFeatureCounts", rule.allowedFeatureCounts);
+        rules.put("titleMinLen", rule.titleMinLen);
+        rules.put("titleMaxLen", rule.titleMaxLen);
+        rules.put("descriptionMinLen", rule.descriptionMinLen);
+        rules.put("descriptionMaxLen", rule.descriptionMaxLen);
+        rules.put("featureMinLen", rule.featureMinLen);
+        rules.put("featureMaxLen", rule.featureMaxLen);
+        rules.put("featureTitleMaxLen", rule.featureTitleMaxLen);
+        rules.put("featureContentMaxLen", rule.featureContentMaxLen);
+        rules.put("titleNoPunctuation", rule.titleNoPunctuation);
+        rules.put("featureNoPunctuation", rule.featureNoPunctuation);
+        rules.put("hints", hints);
+        rules.put("titleLayout", titleLayout);
+        rules.put("descriptionLayout", descLayout);
+        rules.put("featureLayout", featureLayout);
+        return rules;
     }
 
     private static List<String> normalizeUrls(List<String> raw) {
@@ -771,6 +1312,82 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         return out;
     }
 
+    private static List<String> pickSellingPoints(JSONObject parsed, String raw) {
+        List<String> points = normalizePoints(parsed == null ? null : parsed.get("sellingPoints"));
+        if (points.isEmpty() && parsed != null) {
+            points = normalizePoints(parsed.get("bulletPoints"));
+        }
+        if (points.isEmpty() && parsed != null) {
+            points = normalizePoints(parsed.get("bullets"));
+        }
+        if (points.isEmpty() && parsed != null) {
+            points = normalizePoints(parsed.get("features"));
+        }
+        if (points.isEmpty() && parsed != null) {
+            points = normalizePoints(parsed.get("selling_points"));
+        }
+        if (points.isEmpty()) {
+            points = extractPointsFromRaw(raw);
+        }
+        return points;
+    }
+
+    /** 从半截/非标准 JSON 文本里捞卖点字符串 */
+    private static List<String> extractPointsFromRaw(String raw) {
+        List<String> out = new ArrayList<>();
+        if (StrUtil.isBlank(raw)) {
+            return out;
+        }
+        Matcher m = Pattern.compile(
+                "\"(?:sellingPoints|bulletPoints|bullets|features|selling_points)\"\\s*:\\s*\\[([\\s\\S]*?)(?:]|\\z)",
+                Pattern.CASE_INSENSITIVE).matcher(raw);
+        if (!m.find()) {
+            return out;
+        }
+        Matcher item = Pattern.compile("\"((?:\\\\.|[^\"\\\\])*)\"").matcher(m.group(1));
+        while (item.find()) {
+            String s = item.group(1)
+                    .replace("\\\"", "\"")
+                    .replace("\\n", "\n")
+                    .replace("\\\\", "\\")
+                    .trim();
+            if (StrUtil.isNotBlank(s) && !StrUtil.startWithIgnoreCase(s, "Key benefit")) {
+                out.add(s);
+            }
+        }
+        return out;
+    }
+
+    private static String firstStr(JSONObject obj, String... keys) {
+        if (obj == null || keys == null) {
+            return "";
+        }
+        for (String key : keys) {
+            String v = StrUtil.trim(obj.getStr(key));
+            if (StrUtil.isNotBlank(v)) {
+                return v;
+            }
+        }
+        return "";
+    }
+
+    private static String firstMapStr(Map<?, ?> map, String... keys) {
+        if (map == null || keys == null) {
+            return "";
+        }
+        for (String key : keys) {
+            Object v = map.get(key);
+            if (v == null) {
+                continue;
+            }
+            String s = StrUtil.trim(String.valueOf(v));
+            if (StrUtil.isNotBlank(s) && !"null".equalsIgnoreCase(s)) {
+                return s;
+            }
+        }
+        return "";
+    }
+
     private static List<String> normalizePoints(Object raw) {
         List<String> out = new ArrayList<>();
         if (raw == null) {
@@ -778,8 +1395,22 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         }
         if (raw instanceof List<?> list) {
             for (Object o : list) {
+                if (o instanceof Map<?, ?> map) {
+                    String s = firstMapStr(map, "text", "content", "value", "title");
+                    if (StrUtil.isBlank(s)) {
+                        String t = firstMapStr(map, "title");
+                        String c = firstMapStr(map, "content");
+                        if (StrUtil.isNotBlank(t) && StrUtil.isNotBlank(c)) {
+                            s = t + ": " + c;
+                        }
+                    }
+                    if (StrUtil.isNotBlank(s)) {
+                        out.add(s);
+                    }
+                    continue;
+                }
                 String s = StrUtil.trim(String.valueOf(o));
-                if (StrUtil.isNotBlank(s)) {
+                if (StrUtil.isNotBlank(s) && !"null".equalsIgnoreCase(s)) {
                     out.add(s);
                 }
             }
@@ -889,12 +1520,13 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         if (StrUtil.isBlank(text)) {
             return new JSONObject();
         }
+        String cleaned = stripMarkdownFence(text.trim());
         try {
-            return JSONUtil.parseObj(text.trim());
+            return JSONUtil.parseObj(cleaned);
         } catch (Exception ignored) {
             // try block
         }
-        Matcher m = JSON_BLOCK.matcher(text);
+        Matcher m = JSON_BLOCK.matcher(cleaned);
         if (m.find()) {
             try {
                 return JSONUtil.parseObj(m.group());
@@ -902,7 +1534,81 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
                 // ignore
             }
         }
+        // 常见：max_tokens 截断导致 JSON 未闭合
+        String repaired = repairTruncatedJson(cleaned);
+        if (StrUtil.isNotBlank(repaired)) {
+            try {
+                return JSONUtil.parseObj(repaired);
+            } catch (Exception ignored) {
+                // ignore
+            }
+        }
         return new JSONObject();
+    }
+
+    private static String stripMarkdownFence(String text) {
+        String s = StrUtil.blankToDefault(text, "").trim();
+        if (s.startsWith("```")) {
+            int nl = s.indexOf('\n');
+            if (nl > 0) {
+                s = s.substring(nl + 1);
+            }
+            int end = s.lastIndexOf("```");
+            if (end >= 0) {
+                s = s.substring(0, end);
+            }
+        }
+        return s.trim();
+    }
+
+    /** 尽量补全被截断的 JSON 对象（仅用于抢救 title/sellingPoints） */
+    private static String repairTruncatedJson(String text) {
+        int start = text.indexOf('{');
+        if (start < 0) {
+            return null;
+        }
+        String s = text.substring(start);
+        StringBuilder out = new StringBuilder(s);
+        boolean inString = false;
+        boolean escape = false;
+        int brace = 0;
+        int bracket = 0;
+        for (int i = 0; i < out.length(); i++) {
+            char c = out.charAt(i);
+            if (inString) {
+                if (escape) {
+                    escape = false;
+                } else if (c == '\\') {
+                    escape = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                brace++;
+            } else if (c == '}') {
+                brace--;
+            } else if (c == '[') {
+                bracket++;
+            } else if (c == ']') {
+                bracket--;
+            }
+        }
+        if (inString) {
+            out.append('"');
+        }
+        while (bracket > 0) {
+            out.append(']');
+            bracket--;
+        }
+        while (brace > 0) {
+            out.append('}');
+            brace--;
+        }
+        return out.toString();
     }
 
     private static JSONArray extractJsonArray(String text) {
@@ -966,11 +1672,31 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
 
     private static class CopyRule {
         int featureCount = 5;
-        Object allowedFeatureCounts = List.of(5, 8);
+        Object allowedFeatureCounts = List.of(5, 6, 8, 9);
         boolean generateTitle = true;
+        int titleMinLen = 0;
         int titleMaxLen = 200;
+        int descriptionMinLen = 0;
         int descriptionMaxLen = 2000;
+        int featureMinLen = 0;
         int featureMaxLen = 200;
+        int featureTitleMaxLen = 60;
+        int featureContentMaxLen = 400;
+        String titleHint = "";
+        String descriptionHint = "";
+        String featureHint = "";
+        String descMode = "amazonLong";
+        String specsHeading = "Product Specifications:";
+        String notesHeading = "Important Notes:";
+        int minSpecItems = 5;
+        int maxSpecItems = 12;
+        boolean includeImportantNotes = false;
+        boolean titleNoPunctuation = false;
+        boolean featureNoPunctuation = false;
+        boolean featureSplitTitleContent = true;
+        boolean featureRequireColon = true;
+        String featureSeparator = ": ";
+        String featureTitleHint = "Short Benefit Title";
         JSONObject raw = new JSONObject();
     }
 

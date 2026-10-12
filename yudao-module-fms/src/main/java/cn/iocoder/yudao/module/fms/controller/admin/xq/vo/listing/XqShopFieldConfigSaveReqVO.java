@@ -27,6 +27,9 @@ public class XqShopFieldConfigSaveReqVO {
         private String valueSource;
         private String zone;
         private Boolean required;
+        private Boolean fixed;
+        private String remark;
+        private String groupLabel;
     }
 
 }

@@ -16,10 +16,12 @@ import java.util.List;
 public interface XqGigaProductMapper {
 
     Long selectPageCount(@Param("name") String name,
-                         @Param("categoryIds") Collection<Long> categoryIds);
+                         @Param("categoryIds") Collection<Long> categoryIds,
+                         @Param("excludeSkus") Collection<String> excludeSkus);
 
     List<String> selectPageIds(@Param("name") String name,
                                @Param("categoryIds") Collection<Long> categoryIds,
+                               @Param("excludeSkus") Collection<String> excludeSkus,
                                @Param("offset") long offset,
                                @Param("limit") long limit);
 
@@ -36,5 +38,14 @@ public interface XqGigaProductMapper {
     List<XqGigaProductRow> selectIndexByListIds(@Param("ids") Collection<String> ids);
 
     List<XqGigaProductRow> selectIndexMembersByFamilySkus(@Param("familySkus") Collection<String> familySkus);
+
+    /** 下发成功：在快照 detail_json.xqPickedPlatforms 打平台标记 */
+    int mergePickedPlatform(@Param("sku") String sku,
+                            @Param("platformId") String platformId,
+                            @Param("platformName") String platformName);
+
+    /** 关闭后无进行中/已上架任务时，去掉该平台标记 */
+    int removePickedPlatform(@Param("sku") String sku,
+                             @Param("platformId") String platformId);
 
 }

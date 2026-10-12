@@ -29,6 +29,8 @@ public class XqPlatformPriceMarkupRuleDO {
     /** dropship / pickup / both */
     private String applyTo;
     private Boolean enabled;
+    /** 同店铺+运营下默认规则 */
+    private Boolean isDefault;
     private LocalDateTime createDate;
     private LocalDateTime updateDate;
 

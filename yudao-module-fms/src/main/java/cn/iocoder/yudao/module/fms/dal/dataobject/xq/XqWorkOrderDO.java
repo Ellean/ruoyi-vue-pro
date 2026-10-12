@@ -75,6 +75,8 @@ public class XqWorkOrderDO extends BaseDO {
     private Long imageUserId;
     /** 图片作业：todo / rejected / revised / done */
     private String imageStatus;
+    /** 图片驳回原因（运营/文案驳回时必填） */
+    private String imageRejectReason;
     /** 上架平台 ID（原库 t_giga_listing_platform） */
     private String listingPlatformId;
     /** 上架店铺 ID（原库 t_giga_listing_shop） */

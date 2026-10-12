@@ -14,4 +14,13 @@ public class XqRpaConfigSaveReqVO {
     @Schema(description = "密码，留空表示不修改")
     private String password;
 
+    @Schema(description = "执行器：commander / script / exe")
+    private String runnerMode;
+    @Schema(description = "本地脚本或 exe 路径")
+    private String runnerPath;
+    @Schema(description = "附加启动参数，可用 {jobKind} {workUuid} {jobUuid}")
+    private String runnerArgs;
+    @Schema(description = "工作目录")
+    private String runnerWorkdir;
+
 }

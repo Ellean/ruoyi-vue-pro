@@ -13,6 +13,8 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderC
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderRegenerateCopyReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseCandidateRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReuseLookupReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReviseImageReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReviseImageRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 
@@ -46,6 +48,15 @@ public interface XqWorkOrderService {
      */
     int enqueueCopyRpa(@Valid XqWorkOrderCopyRpaEnqueueReqVO reqVO, Long userId);
 
+    /** 文案领取人=我 且 queued */
+    long countQueuedCopyForUser(Long userId);
+
+    /** 工作台归属我（认领人或文案领取人）且 queued */
+    long countQueuedCopyOnDesk(Long userId);
+
+    /** 全表 queued（无租户隔离，仅排障） */
+    long countQueuedCopyAll();
+
     /** 批量生成文案：领取为当前用户文案任务 */
     List<XqWorkOrderDO> batchGenerateCopy(@Valid XqWorkOrderBatchIdsReqVO reqVO, Long userId);
 
@@ -58,6 +69,12 @@ public interface XqWorkOrderService {
     /** 批量入队生图 RPA；返回成功条数 */
     int enqueueImageRpa(@Valid XqWorkOrderBatchIdsReqVO reqVO, Long userId);
 
+    /**
+     * 单图 AI 改图预览（管理端同步调用上游，不写回任务；确认后由前端覆盖）。
+     * 边界：主 API 同步等待（过渡）；长期应迁 worker。
+     */
+    XqWorkOrderReviseImageRespVO reviseImagePreview(@Valid XqWorkOrderReviseImageReqVO reqVO, Long userId);
+
     /** 可分配美工：xq_image 角色用户 + 当前操作人 */
     List<XqAssignableImageUserRespVO> listAssignableImageUsers(Long operatorUserId);
 
@@ -67,6 +84,13 @@ public interface XqWorkOrderService {
     void updateImageStatus(@Valid XqWorkOrderImageStatusReqVO reqVO);
 
     Long listWorkOrder(@Valid XqWorkOrderListReqVO reqVO);
+
+    /**
+     * 导表上架：生成 Excel 并置 export_pending_confirm。
+     * @return [bytes, filename, contentType]
+     */
+    cn.iocoder.yudao.module.fms.service.xq.listing.XqListingExportResult exportListing(
+            @Valid XqWorkOrderListReqVO reqVO);
 
     /** 导表上架：用户确认已上架 */
     Long confirmListing(Long id);

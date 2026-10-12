@@ -24,6 +24,12 @@ public class XqShopFieldConfigRespVO {
         private String valueSource;
         private String zone;
         private Boolean required;
+        /** 展示标记：固定（不锁定输入） */
+        private Boolean fixed;
+        /** 字段备注，展示给业务用户 */
+        private String remark;
+        /** 展示标签：必填 / 非必填 / 固定 */
+        private String groupLabel;
     }
 
     @Data
