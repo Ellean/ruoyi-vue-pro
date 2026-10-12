@@ -5,6 +5,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
+import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.framework.tenant.core.context.TenantContextHolder;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqCopyGenRuleRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.listing.XqImageGenRuleRespVO;
@@ -18,6 +19,8 @@ import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqGigaProductMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqRpaUserConfigMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqWorkOrderMapper;
+import cn.iocoder.yudao.module.system.api.user.AdminUserApi;
+import cn.iocoder.yudao.module.system.api.user.dto.AdminUserRespDTO;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -67,6 +70,8 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
     private XqRpaUserConfigMapper rpaUserConfigMapper;
     @Resource
     private XqRpaConfigService rpaConfigService;
+    @Resource
+    private AdminUserApi adminUserApi;
     @Lazy
     @Resource
     private XqCopyPipelineServiceImpl self;
@@ -80,23 +85,26 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                 order.getListingPlatformId(), order.getListingCategoryId());
 
         Map<String, Object> input = new LinkedHashMap<>();
-        // 登录类入参（与个人 RPA 配置一致，流程可选用）
-        // 表缺 runner_mode 等列时不能拖垮详情：先容错，再靠 SQL 补齐
+        // 登录入参：站点用回调地址；账号取当前登录用户；密码仅来自个人 RPA 配置
+        String base = StrUtil.removeSuffix(StrUtil.blankToDefault(callbackBaseUrl, ""), "/");
+        if (StrUtil.isNotBlank(base)) {
+            input.put("http", base);
+        }
         try {
-            XqRpaUserConfigDO userCfg = rpaUserConfigMapper.selectByUserId(userId);
-            if (userCfg != null) {
-                if (StrUtil.isNotBlank(userCfg.getErpSiteUrl())) {
-                    input.put("http", userCfg.getErpSiteUrl().trim());
-                }
-                if (StrUtil.isNotBlank(userCfg.getAccount())) {
-                    input.put("账户", userCfg.getAccount().trim());
-                }
-                if (StrUtil.isNotBlank(userCfg.getPassword())) {
-                    input.put("密码", userCfg.getPassword().trim());
-                }
+            AdminUserRespDTO user = adminUserApi.getUser(userId);
+            if (user != null && StrUtil.isNotBlank(user.getUsername())) {
+                input.put("账户", user.getUsername().trim());
             }
         } catch (Exception ex) {
-            log.warn("[buildJobInput] 读取个人RPA配置失败 userId={} err={}", userId, ex.getMessage());
+            log.warn("[buildJobInput] 读取登录账号失败 userId={} err={}", userId, ex.getMessage());
+        }
+        try {
+            XqRpaUserConfigDO userCfg = rpaUserConfigMapper.selectByUserId(userId);
+            if (userCfg != null && StrUtil.isNotBlank(userCfg.getPassword())) {
+                input.put("密码", userCfg.getPassword().trim());
+            }
+        } catch (Exception ex) {
+            log.warn("[buildJobInput] 读取个人RPA密码失败 userId={} err={}", userId, ex.getMessage());
         }
         Long tenantId = TenantContextHolder.getTenantId();
         if (tenantId != null) {
@@ -167,7 +175,6 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                 "5.image_prompts_local: 提示词用文案本地拼，全套识图留给生图机器人"
         ));
 
-        String base = StrUtil.removeSuffix(StrUtil.blankToDefault(callbackBaseUrl, ""), "/");
         input.put("apiBaseUrl", base);
         input.put("aiGenerateCopyPath", "/xq/rpa/ai/generate-copy");
         input.put("aiVisionProfilePath", "/xq/rpa/ai/vision-profile");
@@ -214,10 +221,13 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         if (userCfg == null) {
             throw exception(XQ_RPA_CONFIG_INVALID);
         }
+        if (StrUtil.isBlank(userCfg.getPassword())) {
+            throw exception(XQ_RPA_TRIGGER_FAIL, "请先在 RPA 配置中填写密码");
+        }
         String mode = XqRpaJobLauncherRegistry.normalizeMode(userCfg.getRunnerMode());
         // 控制中枢需要 Job UUID；本地脚本/exe 用 runnerPath
         if (CommanderRpaJobLauncher.MODE.equals(mode) && StrUtil.isBlank(userCfg.getCopyJobUuid())) {
-            throw exception(XQ_RPA_CONFIG_INVALID);
+            throw exception(XQ_RPA_TRIGGER_FAIL, "请先在 RPA 配置中填写文案生成流程 UUID");
         }
         if (!CommanderRpaJobLauncher.MODE.equals(mode) && StrUtil.isBlank(userCfg.getRunnerPath())) {
             throw exception(XQ_RPA_TRIGGER_FAIL, "本地执行未配置脚本/exe 路径");
@@ -449,10 +459,11 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
             copyResult.remove("highlightStyle");
         }
 
-        String imagePromptJson = "[]";
+        // 文案 RPA 常回传 imagePrompts=[]；绝不能用空数组覆盖已有成品图
+        boolean hasCallbackPrompts = CollUtil.isNotEmpty(reqVO.getImagePrompts());
+        String imagePromptJson = hasCallbackPrompts ? JSONUtil.toJsonStr(reqVO.getImagePrompts()) : null;
         List<String> promptUrls = new ArrayList<>();
-        if (CollUtil.isNotEmpty(reqVO.getImagePrompts())) {
-            imagePromptJson = JSONUtil.toJsonStr(reqVO.getImagePrompts());
+        if (hasCallbackPrompts) {
             for (Map<String, Object> item : reqVO.getImagePrompts()) {
                 String url = str(item.get("imageUrl"));
                 if (StrUtil.startWithAny(url, "http://", "https://")) {
@@ -466,12 +477,14 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
                 .set(XqWorkOrderDO::getContentTitle, title)
                 .set(XqWorkOrderDO::getContentSellingPoints, selling)
                 .set(XqWorkOrderDO::getCopyResultJson, JSONUtil.toJsonStr(copyResult))
-                .set(XqWorkOrderDO::getImagePromptJson, imagePromptJson)
                 .set(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_SUCCESS)
                 .set(XqWorkOrderDO::getRpaCopyError, null)
                 .set(XqWorkOrderDO::getRpaCopyWorkUuid,
                         StrUtil.blankToDefault(reqVO.getWorkUuid(), order.getRpaCopyWorkUuid()))
                 .set(XqWorkOrderDO::getWorkflowPhase, "image");
+        if (hasCallbackPrompts) {
+            done.set(XqWorkOrderDO::getImagePromptJson, imagePromptJson);
+        }
         if (StrUtil.isBlank(order.getSourceImageUrls()) && !promptUrls.isEmpty()) {
             done.set(XqWorkOrderDO::getSourceImageUrls, JSONUtil.toJsonStr(promptUrls));
             if (StrUtil.isBlank(order.getCoverUrl())) {
@@ -496,9 +509,44 @@ public class XqCopyPipelineServiceImpl implements XqCopyPipelineService {
         log.info("[rpa-copy-callback] ok workOrderId={} sku={} titleLen={} sellingLen={}",
                 order.getId(), order.getExternalSku(), StrUtil.length(title), StrUtil.length(selling));
 
+        // 同 SKU 其它仍卡在 running 的重复单：同步文案并结束，避免界面刷新仍见「生成中」
+        syncStuckSameSkuCopyRunning(order, title, selling, JSONUtil.toJsonStr(copyResult));
+
         // 主体成功后：未勾选独立 RPA 的变体沿用主体文案
         if (order.getParentWorkOrderId() == null) {
             inheritCopyToUnselectedChildren(order.getId(), title, selling, JSONUtil.toJsonStr(copyResult));
+        }
+    }
+
+    /** pull 标了 A、detail?sku 写了 B 时，把仍 stuck 的同 SKU running 一并收口 */
+    private void syncStuckSameSkuCopyRunning(XqWorkOrderDO done, String title, String selling,
+                                             String copyResultJson) {
+        if (done == null || done.getId() == null || StrUtil.isBlank(done.getExternalSku())) {
+            return;
+        }
+        List<XqWorkOrderDO> stuck = workOrderMapper.selectList(
+                new LambdaQueryWrapperX<XqWorkOrderDO>()
+                        .eq(XqWorkOrderDO::getExternalSku, done.getExternalSku())
+                        .eq(XqWorkOrderDO::getStatus, WORK_STATUS_DOING)
+                        .eq(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_RUNNING)
+                        .ne(XqWorkOrderDO::getId, done.getId()));
+        if (CollUtil.isEmpty(stuck)) {
+            return;
+        }
+        for (XqWorkOrderDO row : stuck) {
+            if (row == null || row.getId() == null) {
+                continue;
+            }
+            workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
+                    .eq(XqWorkOrderDO::getId, row.getId())
+                    .set(XqWorkOrderDO::getContentTitle, title)
+                    .set(XqWorkOrderDO::getContentSellingPoints, selling)
+                    .set(XqWorkOrderDO::getCopyResultJson, copyResultJson)
+                    .set(XqWorkOrderDO::getRpaCopyStatus, RPA_STATUS_SUCCESS)
+                    .set(XqWorkOrderDO::getRpaCopyError, null)
+                    .set(XqWorkOrderDO::getWorkflowPhase, "image"));
+            log.info("[rpa-copy-callback] synced stuck running id={} from doneId={} sku={}",
+                    row.getId(), done.getId(), done.getExternalSku());
         }
     }
 

@@ -41,8 +41,8 @@ public class XqListingSplitExportService {
     private XqListingModeHelper listingModeHelper;
 
     /**
-     * 必须挂起调用方主库事务，否则 @DS("xq") / ContextHolder 切不到原库，
-     * 会打到 ruoyi-vue-pro 并报 t_giga_listing_detail_template 不存在。
+     * 挂起外层事务，避免长耗时 Excel 导出占用主库连接。
+     * 模板表已在 master（t_giga_listing_detail_template）。
      */
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public XqListingExportResult exportWorkOrder(XqWorkOrderDO order, Map<String, String> listingValues) {

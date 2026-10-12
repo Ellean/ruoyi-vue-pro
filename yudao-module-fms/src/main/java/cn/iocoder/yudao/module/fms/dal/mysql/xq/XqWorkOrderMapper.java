@@ -45,6 +45,14 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eqIfPresent(XqWorkOrderDO::getListingPlatformId, reqVO.getListingPlatformId())
                 .eqIfPresent(XqWorkOrderDO::getListingShopId, reqVO.getListingShopId())
                 .eqIfPresent(XqWorkOrderDO::getListingCategoryId, reqVO.getListingCategoryId());
+        if (Boolean.TRUE.equals(reqVO.getListingCategorySelected())) {
+            wrapper.isNotNull(XqWorkOrderDO::getListingCategoryId)
+                    .ne(XqWorkOrderDO::getListingCategoryId, "");
+        } else if (Boolean.FALSE.equals(reqVO.getListingCategorySelected())) {
+            wrapper.and(w -> w.isNull(XqWorkOrderDO::getListingCategoryId)
+                    .or()
+                    .eq(XqWorkOrderDO::getListingCategoryId, ""));
+        }
         applyFlowStatus(wrapper, reqVO.getFlowStatus());
         if (reqVO.getBoundUserId() != null && !imagePoolFlat) {
             // 文案/任务工作台：下发时已经按认领人切开，列表不再按文案池二次筛选
@@ -235,7 +243,31 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
         return out;
     }
 
+    /**
+     * 按 SKU 取文案详情工单。优先 running（刚被 pull 标记），再 queued，最后才按 id 最大。
+     * 避免同 SKU 多单时 detail?sku= 命中新单、pull 却标记了旧单，回调与界面分裂。
+     */
     default XqWorkOrderDO selectDoingCopyBySku(Long userId, String sku) {
+        XqWorkOrderDO running = selectOne(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getExternalSku, sku)
+                .eq(XqWorkOrderDO::getStatus, 10)
+                .eq(XqWorkOrderDO::getAssigneeUserId, userId)
+                .eq(XqWorkOrderDO::getRpaCopyStatus, "running")
+                .orderByDesc(XqWorkOrderDO::getId)
+                .last("LIMIT 1"));
+        if (running != null) {
+            return running;
+        }
+        XqWorkOrderDO queued = selectOne(new LambdaQueryWrapperX<XqWorkOrderDO>()
+                .eq(XqWorkOrderDO::getExternalSku, sku)
+                .eq(XqWorkOrderDO::getStatus, 10)
+                .eq(XqWorkOrderDO::getAssigneeUserId, userId)
+                .eq(XqWorkOrderDO::getRpaCopyStatus, "queued")
+                .orderByDesc(XqWorkOrderDO::getId)
+                .last("LIMIT 1"));
+        if (queued != null) {
+            return queued;
+        }
         return selectOne(new LambdaQueryWrapperX<XqWorkOrderDO>()
                 .eq(XqWorkOrderDO::getExternalSku, sku)
                 .eq(XqWorkOrderDO::getStatus, 10)

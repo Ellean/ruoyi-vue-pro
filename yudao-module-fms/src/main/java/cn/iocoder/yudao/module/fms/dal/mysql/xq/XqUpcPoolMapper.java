@@ -3,7 +3,6 @@ package cn.iocoder.yudao.module.fms.dal.mysql.xq;
 import cn.iocoder.yudao.framework.mybatis.core.mapper.BaseMapperX;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqUpcPoolDO;
-import com.baomidou.dynamic.datasource.annotation.DS;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
@@ -12,7 +11,6 @@ import java.util.Collection;
 import java.util.List;
 
 @Mapper
-@DS("xq")
 public interface XqUpcPoolMapper extends BaseMapperX<XqUpcPoolDO> {
 
     String GLOBAL_PLATFORM = "__global__";

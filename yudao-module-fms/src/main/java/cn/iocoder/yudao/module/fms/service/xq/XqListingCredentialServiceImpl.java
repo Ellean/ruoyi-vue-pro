@@ -13,7 +13,6 @@ import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingPlatformCredentialMappe
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingPlatformMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqPlatformMapper;
 import cn.iocoder.yudao.module.fms.framework.xq.XqSecretCrypto;
-import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -98,13 +97,8 @@ public class XqListingCredentialServiceImpl implements XqListingCredentialServic
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public Map<String, Object> syncFromXq() {
-        List<XqListingPlatformDO> legacy;
-        DynamicDataSourceContextHolder.push("xq");
-        try {
-            legacy = listingPlatformMapper.selectAllList();
-        } finally {
-            DynamicDataSourceContextHolder.poll();
-        }
+        // 原库平台表已迁入 master
+        List<XqListingPlatformDO> legacy = listingPlatformMapper.selectAllList();
         Map<String, XqPlatformDO> bySource = new HashMap<>();
         Map<String, XqPlatformDO> byCode = new HashMap<>();
         for (XqPlatformDO p : platformMapper.selectListAll()) {

@@ -11,7 +11,10 @@ import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqRpaUserConfigMapper;
 import cn.iocoder.yudao.module.fms.service.xq.rpa.CommanderRpaJobLauncher;
 import cn.iocoder.yudao.module.fms.service.xq.rpa.XqRpaJobLauncher;
 import cn.iocoder.yudao.module.fms.service.xq.rpa.XqRpaJobLauncherRegistry;
+import cn.iocoder.yudao.module.system.api.user.AdminUserApi;
+import cn.iocoder.yudao.module.system.api.user.dto.AdminUserRespDTO;
 import jakarta.annotation.Resource;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
 
@@ -25,12 +28,17 @@ import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.*;
 @Validated
 public class XqRpaConfigServiceImpl implements XqRpaConfigService {
 
+    @Value("${xq.rpa.callback-base-url:http://127.0.0.1:48080/admin-api}")
+    private String callbackBaseUrl;
+
     @Resource
     private XqRpaUserConfigMapper rpaUserConfigMapper;
     @Resource
     private XqRpaGlobalConfigService rpaGlobalConfigService;
     @Resource
     private XqRpaJobLauncherRegistry jobLauncherRegistry;
+    @Resource
+    private AdminUserApi adminUserApi;
 
     @Override
     public XqRpaConfigRespVO getConfig(Long userId) {
@@ -47,8 +55,9 @@ public class XqRpaConfigServiceImpl implements XqRpaConfigService {
         }
         vo.setImageJobUuid(row.getImageJobUuid());
         vo.setCopyJobUuid(row.getCopyJobUuid());
-        vo.setErpSiteUrl(row.getErpSiteUrl());
-        vo.setAccount(row.getAccount());
+        // 账号/站点不再人工配置：账号走登录用户，站点走回调地址
+        vo.setErpSiteUrl(null);
+        vo.setAccount(null);
         vo.setHasPassword(StrUtil.isNotBlank(row.getPassword()));
         vo.setRunnerMode(XqRpaJobLauncherRegistry.normalizeMode(row.getRunnerMode()));
         vo.setRunnerPath(row.getRunnerPath());
@@ -59,6 +68,7 @@ public class XqRpaConfigServiceImpl implements XqRpaConfigService {
 
     @Override
     public void saveConfig(Long userId, XqRpaConfigSaveReqVO reqVO) {
+        // 个人配置只需：文案/生图流程 UUID + 密码（账号由接口注入）
         String runnerMode = XqRpaJobLauncherRegistry.normalizeMode(
                 reqVO == null ? null : reqVO.getRunnerMode());
         XqRpaUserConfigDO existing = rpaUserConfigMapper.selectByUserId(userId);
@@ -67,8 +77,8 @@ public class XqRpaConfigServiceImpl implements XqRpaConfigService {
                     .userId(userId)
                     .imageJobUuid(trimOrNull(reqVO.getImageJobUuid()))
                     .copyJobUuid(trimOrNull(reqVO.getCopyJobUuid()))
-                    .erpSiteUrl(trimOrNull(reqVO.getErpSiteUrl()))
-                    .account(trimOrNull(reqVO.getAccount()))
+                    .erpSiteUrl(null)
+                    .account(null)
                     .password(trimOrNull(reqVO.getPassword()))
                     .runnerMode(runnerMode)
                     .runnerPath(trimOrNull(reqVO.getRunnerPath()))
@@ -82,8 +92,8 @@ public class XqRpaConfigServiceImpl implements XqRpaConfigService {
         update.setId(existing.getId());
         update.setImageJobUuid(trimOrNull(reqVO.getImageJobUuid()));
         update.setCopyJobUuid(trimOrNull(reqVO.getCopyJobUuid()));
-        update.setErpSiteUrl(trimOrNull(reqVO.getErpSiteUrl()));
-        update.setAccount(trimOrNull(reqVO.getAccount()));
+        update.setErpSiteUrl(null);
+        update.setAccount(null);
         if (StrUtil.isNotBlank(reqVO.getPassword())) {
             update.setPassword(reqVO.getPassword().trim());
         }
@@ -110,7 +120,8 @@ public class XqRpaConfigServiceImpl implements XqRpaConfigService {
         if (!CommanderRpaJobLauncher.MODE.equals(mode) && StrUtil.isBlank(row.getRunnerPath())) {
             throw exception(XQ_RPA_TRIGGER_FAIL, "请先填写本地脚本/exe 路径");
         }
-        return launch(userId, kind, StrUtil.blankToDefault(jobUuid, row.getRunnerPath()), buildInputParam(row));
+        return launch(userId, kind, StrUtil.blankToDefault(jobUuid, row.getRunnerPath()),
+                buildInputParam(userId, row));
     }
 
     /**
@@ -130,21 +141,30 @@ public class XqRpaConfigServiceImpl implements XqRpaConfigService {
         if (StrUtil.isNotBlank(row.getRunnerPath())) {
             payload.putIfAbsent("runnerPath", row.getRunnerPath().trim());
         }
+        // 补齐账号/密码/站点（调用方未显式传入时）
+        Map<String, Object> defaults = buildInputParam(userId, row);
+        defaults.forEach(payload::putIfAbsent);
         return launcher.launch(row, jobKind, jobUuid, payload);
     }
 
-    private static Map<String, Object> buildInputParam(XqRpaUserConfigDO row) {
+    private Map<String, Object> buildInputParam(Long userId, XqRpaUserConfigDO row) {
         Map<String, Object> param = new LinkedHashMap<>();
-        if (StrUtil.isNotBlank(row.getErpSiteUrl())) {
-            param.put("http", row.getErpSiteUrl().trim());
+        String base = StrUtil.removeSuffix(StrUtil.blankToDefault(callbackBaseUrl, ""), "/");
+        if (StrUtil.isNotBlank(base)) {
+            param.put("http", base);
         }
-        if (StrUtil.isNotBlank(row.getAccount())) {
-            param.put("账户", row.getAccount().trim());
+        try {
+            AdminUserRespDTO user = adminUserApi.getUser(userId);
+            if (user != null && StrUtil.isNotBlank(user.getUsername())) {
+                param.put("账户", user.getUsername().trim());
+            }
+        } catch (Exception ignored) {
+            // ignore
         }
-        if (StrUtil.isNotBlank(row.getPassword())) {
+        if (row != null && StrUtil.isNotBlank(row.getPassword())) {
             param.put("密码", row.getPassword().trim());
         }
-        // 与工作台同租户登录；RPA 流程勿再写死 tenant-id:162
+        // 与工作台同租户登录；RPA 流程勿再写死 tenant-id
         Long tenantId = TenantContextHolder.getTenantId();
         if (tenantId != null) {
             String tid = String.valueOf(tenantId);

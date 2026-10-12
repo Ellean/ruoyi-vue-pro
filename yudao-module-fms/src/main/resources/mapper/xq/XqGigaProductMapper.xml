@@ -81,7 +81,7 @@
     <sql id="ListColumns">
         l.id AS id,
         l.sku AS sku,
-        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mpn')) AS itemCode,
+        NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mpn')), ''), 'null') AS itemCode,
         COALESCE(NULLIF(l.product_name, ''), s.product_name,
                  JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.productName'))) AS name,
         JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.category')) AS categoryName,
@@ -114,6 +114,17 @@
           NULLIF(s.discounted_price, 0),
           CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.discountedPrice')) AS DECIMAL(14,4))
         ) AS discountedPrice,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.pickupPrice')) AS DECIMAL(14,4)) AS pickupPrice,
+        COALESCE(
+          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.mergedCost')) AS DECIMAL(14,4)),
+          CASE
+            WHEN JSON_EXTRACT(s.price_json, '$.price') IS NOT NULL THEN
+              CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.price')) AS DECIMAL(14,4))
+              + IFNULL(CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)), 0)
+            ELSE NULL
+          END
+        ) AS dropshipPrice,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)) AS dropshipShippingFee,
         COALESCE(s.currency, JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.currency')), 'USD') AS currency,
         s.sku_available AS skuAvailable,
         CASE
@@ -123,7 +134,7 @@
         END AS listedTag,
         COALESCE(l.sync_time, l.create_date, s.sync_time) AS createTime,
         CONCAT('Giga/', IFNULL(l.source_platform, 'giga')) AS remark,
-        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mainColor')) AS mainColor,
+        NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mainColor')), ''), 'null') AS mainColor,
         JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.upc')) AS upc,
         CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.lengthCm')) AS DECIMAL(14,2)) AS lengthCm,
         CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.widthCm')) AS DECIMAL(14,2)) AS widthCm,
@@ -135,7 +146,7 @@
     <sql id="DetailColumns">
         l.id AS id,
         l.sku AS sku,
-        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mpn')) AS itemCode,
+        NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mpn')), ''), 'null') AS itemCode,
         COALESCE(NULLIF(l.product_name, ''), s.product_name,
                  JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.productName'))) AS name,
         JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.category')) AS categoryName,
@@ -171,6 +182,17 @@
           NULLIF(s.discounted_price, 0),
           CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.discountedPrice')) AS DECIMAL(14,4))
         ) AS discountedPrice,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.pickupPrice')) AS DECIMAL(14,4)) AS pickupPrice,
+        COALESCE(
+          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.mergedCost')) AS DECIMAL(14,4)),
+          CASE
+            WHEN JSON_EXTRACT(s.price_json, '$.price') IS NOT NULL THEN
+              CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.price')) AS DECIMAL(14,4))
+              + IFNULL(CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)), 0)
+            ELSE NULL
+          END
+        ) AS dropshipPrice,
+        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)) AS dropshipShippingFee,
         COALESCE(s.currency, JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.currency')), 'USD') AS currency,
         s.sku_available AS skuAvailable,
         CASE
@@ -180,7 +202,7 @@
         END AS listedTag,
         COALESCE(l.sync_time, l.create_date, s.sync_time) AS createTime,
         CONCAT('Giga/', IFNULL(l.source_platform, 'giga')) AS remark,
-        JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mainColor')) AS mainColor,
+        NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.mainColor')), ''), 'null') AS mainColor,
         JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.upc')) AS upc,
         CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.lengthCm')) AS DECIMAL(14,2)) AS lengthCm,
         CAST(JSON_UNQUOTE(JSON_EXTRACT(s.detail_json, '$.widthCm')) AS DECIMAL(14,2)) AS widthCm,
@@ -465,8 +487,8 @@
     <sql id="IndexColumns">
         i.list_id AS id,
         i.sku AS sku,
-        i.item_code AS itemCode,
-        COALESCE(NULLIF(i.variant_label, ''), i.product_name, i.sku) AS name,
+        NULLIF(NULLIF(i.item_code, ''), 'null') AS itemCode,
+        COALESCE(NULLIF(NULLIF(i.variant_label, ''), 'null'), i.product_name, i.sku) AS name,
         i.category_name AS categoryName,
         i.giga_category_id AS gigaCategoryId,
         i.image_url AS imageUrl,
@@ -479,14 +501,60 @@
         i.price AS price,
         i.exclusive_price AS exclusivePrice,
         i.discounted_price AS discountedPrice,
+        CAST(NULL AS DECIMAL(14,4)) AS pickupPrice,
+        CAST(NULL AS DECIMAL(14,4)) AS dropshipPrice,
+        CAST(NULL AS DECIMAL(14,4)) AS dropshipShippingFee,
         COALESCE(i.currency, 'USD') AS currency,
         i.sku_available AS skuAvailable,
         i.listed_tag AS listedTag,
         COALESCE(i.sync_time, i.create_date) AS createTime,
         CONCAT('Giga/', IFNULL(i.source_platform, 'giga')) AS remark,
-        COALESCE(NULLIF(i.main_color, ''), i.variant_label) AS mainColor,
+        COALESCE(
+          NULLIF(NULLIF(i.main_color, ''), 'null'),
+          NULLIF(NULLIF(i.variant_label, ''), 'null')
+        ) AS mainColor,
         i.family_sku AS familySku
     </sql>
+
+    <!-- 按 SKU 批量取合并价（自提 / 一件代发），供家族索引列表补字段 -->
+    <select id="selectPriceRolesBySkus" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
+        SELECT
+            s.sku AS sku,
+            CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.pickupPrice')) AS DECIMAL(14,4)) AS pickupPrice,
+            COALESCE(
+              CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.mergedCost')) AS DECIMAL(14,4)),
+              CASE
+                WHEN JSON_EXTRACT(s.price_json, '$.price') IS NOT NULL THEN
+                  CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.price')) AS DECIMAL(14,4))
+                  + IFNULL(CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)), 0)
+                ELSE NULL
+              END
+            ) AS dropshipPrice,
+            CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)) AS dropshipShippingFee
+        FROM (
+            SELECT s1.sku, s1.price_json,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY s1.sku
+                     ORDER BY
+                       (CASE
+                          WHEN IFNULL(s1.price,0) &gt; 0
+                            OR IFNULL(s1.discounted_price,0) &gt; 0
+                            OR IFNULL(s1.exclusive_price,0) &gt; 0 THEN 2
+                          WHEN s1.price_json IS NOT NULL
+                            AND s1.price_json NOT IN ('', '{}', 'null') THEN 1
+                          ELSE 0
+                        END) DESC,
+                       s1.sync_time DESC,
+                       s1.id DESC
+                   ) AS rn
+            FROM t_gigab2b_product_snapshot s1
+            WHERE s1.sku IN
+            <foreach collection="skus" item="sku" open="(" separator="," close=")">
+                #{sku}
+            </foreach>
+        ) s
+        WHERE s.rn = 1
+    </select>
 
     <select id="selectIndexBySku" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
         SELECT

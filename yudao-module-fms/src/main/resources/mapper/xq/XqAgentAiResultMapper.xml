@@ -4,41 +4,41 @@
 
     <!-- 有 AI 图：与同步脚本 / 原库看板一致 -->
     <sql id="HasAiImages">
-        agent_results_json IS NOT NULL
-        AND agent_results_json &lt;&gt; ''
-        AND agent_results_json &lt;&gt; 'null'
-        AND agent_results_json &lt;&gt; '{}'
-        AND agent_results_json &lt;&gt; '[]'
-        AND JSON_EXTRACT(agent_results_json, '$.images') IS NOT NULL
-        AND JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) &lt;&gt; 'NULL'
+        l.agent_results_json IS NOT NULL
+        AND l.agent_results_json &lt;&gt; ''
+        AND l.agent_results_json &lt;&gt; 'null'
+        AND l.agent_results_json &lt;&gt; '{}'
+        AND l.agent_results_json &lt;&gt; '[]'
+        AND JSON_EXTRACT(l.agent_results_json, '$.images') IS NOT NULL
+        AND JSON_TYPE(JSON_EXTRACT(l.agent_results_json, '$.images')) &lt;&gt; 'NULL'
         AND (
           (
-            JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) = 'ARRAY'
-            AND JSON_LENGTH(JSON_EXTRACT(agent_results_json, '$.images')) &gt; 0
+            JSON_TYPE(JSON_EXTRACT(l.agent_results_json, '$.images')) = 'ARRAY'
+            AND JSON_LENGTH(JSON_EXTRACT(l.agent_results_json, '$.images')) &gt; 0
           )
           OR (
-            JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) = 'OBJECT'
-            AND JSON_LENGTH(JSON_EXTRACT(agent_results_json, '$.images')) &gt; 0
+            JSON_TYPE(JSON_EXTRACT(l.agent_results_json, '$.images')) = 'OBJECT'
+            AND JSON_LENGTH(JSON_EXTRACT(l.agent_results_json, '$.images')) &gt; 0
           )
         )
     </sql>
 
     <sql id="ImageCountExpr">
         CASE
-          WHEN JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) = 'ARRAY'
-            THEN IFNULL(JSON_LENGTH(JSON_EXTRACT(agent_results_json, '$.images')), 0)
-          WHEN JSON_TYPE(JSON_EXTRACT(agent_results_json, '$.images')) = 'OBJECT'
-            AND JSON_LENGTH(JSON_EXTRACT(agent_results_json, '$.images')) &gt; 0 THEN 1
+          WHEN JSON_TYPE(JSON_EXTRACT(l.agent_results_json, '$.images')) = 'ARRAY'
+            THEN IFNULL(JSON_LENGTH(JSON_EXTRACT(l.agent_results_json, '$.images')), 0)
+          WHEN JSON_TYPE(JSON_EXTRACT(l.agent_results_json, '$.images')) = 'OBJECT'
+            AND JSON_LENGTH(JSON_EXTRACT(l.agent_results_json, '$.images')) &gt; 0 THEN 1
           ELSE 0
         END
     </sql>
 
     <sql id="CoverUrlExpr">
         COALESCE(
-          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.images[0].displayUrl')), ''),
-          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.images[0].ossUrl')), ''),
-          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.images[0].url')), ''),
-          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.images[0].imageUrl')), '')
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.images[0].displayUrl')), ''),
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.images[0].ossUrl')), ''),
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.images[0].url')), ''),
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.images[0].imageUrl')), '')
         )
     </sql>
 
@@ -46,58 +46,103 @@
         <where>
             <include refid="HasAiImages"/>
             <if test="sku != null and sku != ''">
-                AND sku LIKE CONCAT('%', #{sku}, '%')
+                AND l.sku LIKE CONCAT('%', #{sku}, '%')
             </if>
             <if test="keyword != null and keyword != ''">
                 AND (
-                  sku LIKE CONCAT('%', #{keyword}, '%')
-                  OR product_name LIKE CONCAT('%', #{keyword}, '%')
+                  l.sku LIKE CONCAT('%', #{keyword}, '%')
+                  OR l.product_name LIKE CONCAT('%', #{keyword}, '%')
                 )
+            </if>
+            <if test="assignedOnly != null and assignedOnly">
+                AND l.listing_platform_id IS NOT NULL AND TRIM(l.listing_platform_id) &lt;&gt; ''
+                AND l.assign_owner_user_id IS NOT NULL AND TRIM(l.assign_owner_user_id) &lt;&gt; ''
+                AND l.assign_image_user_id IS NOT NULL AND TRIM(l.assign_image_user_id) &lt;&gt; ''
             </if>
         </where>
     </sql>
 
+    <sql id="SelectCols">
+        l.id,
+        l.sku,
+        l.product_name AS productName,
+        (<include refid="ImageCountExpr"/>) AS imageCount,
+        (<include refid="CoverUrlExpr"/>) AS coverUrl,
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.batchNo')), '') AS batchNo,
+        COALESCE(
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.generatedAt')), ''),
+          NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.createdAt')), '')
+        ) AS generatedAt,
+        l.update_date AS updateDate,
+        l.listing_platform_id AS listingPlatformId,
+        COALESCE(p.name, p2.name) AS platformName,
+        l.shop_id AS shopId,
+        l.listing_category_id AS listingCategoryId,
+        cat.name AS categoryName,
+        l.assign_owner_user_id AS assignOwnerUserId,
+        ou.account AS assignOwnerName,
+        l.assign_copy_user_id AS assignCopyUserId,
+        cu.account AS assignCopyName,
+        l.assign_image_user_id AS assignImageUserId,
+        iu.account AS assignImageName,
+        l.assign_phase AS assignPhase,
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.copy.title')), '') AS copyTitle,
+        CASE
+          WHEN JSON_EXTRACT(l.agent_results_json, '$.copy') IS NOT NULL
+            AND JSON_TYPE(JSON_EXTRACT(l.agent_results_json, '$.copy')) &lt;&gt; 'NULL'
+            AND (
+              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.copy.title')), '') IS NOT NULL
+              OR NULLIF(JSON_UNQUOTE(JSON_EXTRACT(l.agent_results_json, '$.copy.description')), '') IS NOT NULL
+              OR (
+                JSON_TYPE(JSON_EXTRACT(l.agent_results_json, '$.copy.bullets')) = 'ARRAY'
+                AND JSON_LENGTH(JSON_EXTRACT(l.agent_results_json, '$.copy.bullets')) &gt; 0
+              )
+            )
+          THEN 1 ELSE 0
+        END AS hasCopy,
+        CASE
+          WHEN JSON_TYPE(JSON_EXTRACT(l.agent_results_json, '$.copy.bullets')) = 'ARRAY'
+            THEN IFNULL(JSON_LENGTH(JSON_EXTRACT(l.agent_results_json, '$.copy.bullets')), 0)
+          WHEN JSON_TYPE(JSON_EXTRACT(l.agent_results_json, '$.copy.bulletPoints')) = 'ARRAY'
+            THEN IFNULL(JSON_LENGTH(JSON_EXTRACT(l.agent_results_json, '$.copy.bulletPoints')), 0)
+          ELSE 0
+        END AS bulletCount
+    </sql>
+
+    <sql id="Joins">
+        LEFT JOIN t_giga_listing_platform p ON p.id = l.listing_platform_id
+        <!-- 本地平台 id 可能与线上不一致：用分类上的 platform_id 再兜底一次 -->
+        LEFT JOIN t_giga_listing_category cat ON cat.id = l.listing_category_id
+        LEFT JOIN t_giga_listing_platform p2 ON p2.id = cat.platform_id
+        <!-- CAST 避免 BIGINT 与字符串 id 精度对不上 -->
+        LEFT JOIN t_user ou ON CAST(ou.id AS CHAR) = CAST(l.assign_owner_user_id AS CHAR)
+        LEFT JOIN t_user cu ON CAST(cu.id AS CHAR) = CAST(l.assign_copy_user_id AS CHAR)
+        LEFT JOIN t_user iu ON CAST(iu.id AS CHAR) = CAST(l.assign_image_user_id AS CHAR)
+    </sql>
+
     <select id="selectPageCount" resultType="long">
         SELECT COUNT(*)
-        FROM t_gigab2b_product_list
+        FROM t_gigab2b_product_list l
         <include refid="Filter"/>
     </select>
 
     <select id="selectPage" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqAgentAiResultRow">
         SELECT
-            id,
-            sku,
-            product_name AS productName,
-            (<include refid="ImageCountExpr"/>) AS imageCount,
-            (<include refid="CoverUrlExpr"/>) AS coverUrl,
-            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.batchNo')), '') AS batchNo,
-            COALESCE(
-              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.generatedAt')), ''),
-              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.createdAt')), '')
-            ) AS generatedAt,
-            update_date AS updateDate
-        FROM t_gigab2b_product_list
+            <include refid="SelectCols"/>
+        FROM t_gigab2b_product_list l
+        <include refid="Joins"/>
         <include refid="Filter"/>
-        ORDER BY update_date DESC, id DESC
+        ORDER BY l.update_date DESC, l.id DESC
         LIMIT #{offset}, #{limit}
     </select>
 
     <select id="selectById" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqAgentAiResultRow">
         SELECT
-            id,
-            sku,
-            product_name AS productName,
-            (<include refid="ImageCountExpr"/>) AS imageCount,
-            (<include refid="CoverUrlExpr"/>) AS coverUrl,
-            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.batchNo')), '') AS batchNo,
-            COALESCE(
-              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.generatedAt')), ''),
-              NULLIF(JSON_UNQUOTE(JSON_EXTRACT(agent_results_json, '$.createdAt')), '')
-            ) AS generatedAt,
-            update_date AS updateDate,
-            agent_results_json AS agentResultsJson
-        FROM t_gigab2b_product_list
-        WHERE id = #{id}
+            <include refid="SelectCols"/>,
+            l.agent_results_json AS agentResultsJson
+        FROM t_gigab2b_product_list l
+        <include refid="Joins"/>
+        WHERE l.id = #{id}
         LIMIT 1
     </select>
 

@@ -47,9 +47,9 @@ import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingPlatformMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqPlatformMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqStoreMapper;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.validation.annotation.Validated;
-import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -70,6 +70,7 @@ import static cn.iocoder.yudao.framework.security.core.util.SecurityFrameworkUti
  */
 @Service
 @Validated
+@Slf4j
 public class XqListingCatalogService {
 
     @Resource
@@ -398,11 +399,7 @@ public class XqListingCatalogService {
         return result;
     }
 
-    /**
-     * 切勿在本方法上加 @Transactional：NOT_SUPPORTED 仍会打开事务同步，
-     * 前面 resolveSourcePlatformId 打主库后 SqlSession 绑死 master，
-     * Mapper 上的 @DS("xq") 无法切到源库 t_giga_copy_gen_rule。
-     */
+    /** 文案规则：主库 t_giga_copy_gen_rule */
     public XqCopyGenRuleRespVO getCopyRule(String platformId) {
         String sourcePlatformId = storeScopeService.resolveSourcePlatformId(platformId);
         XqCopyGenRuleDO rule = onXqDs(() -> copyGenRuleMapper.selectByPlatformId(sourcePlatformId));
@@ -492,7 +489,7 @@ public class XqListingCatalogService {
         return vo;
     }
 
-    /** 不要加事务，否则 @DS("xq") 会打到主库 */
+    /** 类目字段配置：主库 t_giga_listing_category_field_config */
     public List<XqCategoryFieldConfigRespVO> listCategoryFieldConfigs(String platformId) {
         String sourcePlatformId = storeScopeService.resolveSourcePlatformId(platformId);
         List<XqListingCategoryFieldConfigDO> rows =
@@ -1294,8 +1291,15 @@ public class XqListingCatalogService {
                 || StrUtil.isBlank(categoryId)) {
             return;
         }
-        XqListingCategoryFieldConfigDO row = categoryFieldConfigMapper.selectByCategoryId(categoryId);
-        Map<String, XqCategoryFieldConfigRespVO.Item> map = parseFieldConfigItems(row);
+        Map<String, XqCategoryFieldConfigRespVO.Item> map = Map.of();
+        try {
+            XqListingCategoryFieldConfigDO row = categoryFieldConfigMapper.selectByCategoryId(categoryId);
+            map = parseFieldConfigItems(row);
+        } catch (Exception ex) {
+            // 本地未同步表时不阻断类目模板；仅用规则猜测分区
+            log.warn("[applyFieldConfig] skip config table categoryId={} err={}",
+                    categoryId, StrUtil.maxLength(StrUtil.blankToDefault(ex.getMessage(), ""), 180));
+        }
         for (XqCategoryFieldTemplateRespVO.Field field : vo.getFields()) {
             XqCategoryFieldConfigRespVO.Item item = map.get(StrUtil.blankToDefault(field.getCode(), ""));
             if (item != null) {
@@ -1434,14 +1438,9 @@ public class XqListingCatalogService {
                 + "\"limits\":{\"titleMaxLen\":200,\"descriptionMaxLen\":2000,\"featureMaxLen\":400}}";
     }
 
-    /** 主库事务会把 SqlSession 钉在 master，@DS("xq") 失效；强制切到原库再查规则表。 */
+    /** 历史双库切源；表已迁入 master，直接走主库。 */
     private static <T> T onXqDs(java.util.function.Supplier<T> action) {
-        DynamicDataSourceContextHolder.push("xq");
-        try {
-            return action.get();
-        } finally {
-            DynamicDataSourceContextHolder.poll();
-        }
+        return action.get();
     }
 
 }

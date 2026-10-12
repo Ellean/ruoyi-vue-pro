@@ -57,7 +57,7 @@ spring:
         pool-prepared-statements: true # 是否开启 PreparedStatement 缓存
         max-pool-prepared-statement-per-connection-size: 20 # 每个连接缓存的 PreparedStatement 数量
       primary: master
-      # xq 未匹配时禁止静默回落主库（否则会报 ruoyi-vue-pro.t_giga_* 不存在）
+      # Giga/上架表已迁入 master（ruoyi-vue-pro），不再使用 xq 数据源
       strict: true
       datasource:
         master:
@@ -80,11 +80,6 @@ spring:
           #          password: Yudao@2024 # OpenGauss 连接的示例
           #          username: root # 瀚高 HighGo 连接的示例
           #          password: 123456 # 瀚高 HighGo 连接的示例
-        xq: # 本地品库（由线上 xq_finance_test 同步，含 associate 变体族）
-          lazy: true
-          url: jdbc:mysql://127.0.0.1:3306/xq_finance_test?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true&characterEncoding=UTF-8
-          username: root
-          password: root
         slave: # 模拟从库，可根据自己需要修改
           lazy: true # 开启懒加载，保证启动速度
           url: jdbc:mysql://127.0.0.1:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true&nullCatalogMeansCurrent=true

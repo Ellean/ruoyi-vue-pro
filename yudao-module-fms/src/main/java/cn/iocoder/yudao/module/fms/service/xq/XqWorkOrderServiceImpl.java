@@ -545,7 +545,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    // 不加事务：先落库入队再调影刀；事务内触发会导致 RPA pull 时读不到未提交队列
     public int enqueueCopyRpa(XqWorkOrderCopyRpaEnqueueReqVO reqVO, Long userId) {
         if (reqVO == null || reqVO.getRootId() == null) {
             throw exception(XQ_WORK_ORDER_NOT_EXISTS);
@@ -588,13 +588,21 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         }
 
         int n = 0;
+        XqWorkOrderDO triggerTarget = null;
         for (Long id : selected) {
             XqWorkOrderDO order = workOrderMapper.selectById(id);
             if (order == null || !Integer.valueOf(WORK_STATUS_DOING).equals(order.getStatus())) {
                 continue;
             }
             copyPipelineService.enqueueCopyJob(order, userId);
+            if (triggerTarget == null) {
+                triggerTarget = order;
+            }
             n += 1;
+        }
+        // 入队后直接调影刀控制中枢；机器人再 pull 扁平队列，无需用户手动「触发 RPA」
+        if (n > 0 && triggerTarget != null) {
+            copyPipelineService.triggerCopyJob(triggerTarget, userId);
         }
         return n;
     }
@@ -912,9 +920,14 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             if (row == null) {
                 continue;
             }
-            vo.setItemCode(StrUtil.blankToDefault(row.getItemCode(), vo.getItemCode()));
-            vo.setMainColor(row.getMainColor());
-            vo.setUpc(row.getUpc());
+            // Giga detail 里 mpn/mainColor 常为 JSON null，部分驱动会读成字面量 "null"
+            String itemCode = XqGigaAssociateSupport.clean(row.getItemCode());
+            String mainColor = XqGigaAssociateSupport.clean(row.getMainColor());
+            if (StrUtil.isNotBlank(itemCode)) {
+                vo.setItemCode(itemCode);
+            }
+            vo.setMainColor(mainColor);
+            vo.setUpc(XqGigaAssociateSupport.clean(row.getUpc()));
             vo.setPrice(row.getPrice() != null ? row.getPrice() : row.getDiscountedPrice());
             vo.setCurrency(StrUtil.blankToDefault(row.getCurrency(), "USD"));
             vo.setQtyAvailable(row.getQtyAvailable());
@@ -924,8 +937,9 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
             if (StrUtil.isBlank(vo.getCoverUrl()) && StrUtil.isNotBlank(row.getImageUrl())) {
                 vo.setCoverUrl(row.getImageUrl());
             }
-            if (StrUtil.isBlank(vo.getVariantLabel()) && StrUtil.isNotBlank(row.getMainColor())) {
-                vo.setVariantLabel(row.getMainColor());
+            if (StrUtil.isBlank(XqGigaAssociateSupport.clean(vo.getVariantLabel()))
+                    && StrUtil.isNotBlank(mainColor)) {
+                vo.setVariantLabel(mainColor);
             }
         }
     }
@@ -1501,7 +1515,7 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
     @Override
     public Long listWorkOrder(XqWorkOrderListReqVO reqVO) {
-        // 导表路径会读 xq 库，不能套主库 @Transactional（否则 @DS("xq") 失效）
+        // 导表路径会读模板/规则表（已在 master），长耗时导出不宜套外层事务
         XqWorkOrderDO order = validateDoing(reqVO.getId());
         if (!isListableImage(order)) {
             throw exception(XQ_WORK_ORDER_IMAGE_REQUIRED);

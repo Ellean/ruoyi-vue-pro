@@ -19,7 +19,25 @@ public class XqAgentAiTestRespVO {
     private String batchNo;
     private String generatedAt;
     private LocalDateTime updateDate;
+    private String listingPlatformId;
+    private String platformName;
+    private String shopId;
+    private String listingCategoryId;
+    private String categoryName;
+    private String assignOwnerUserId;
+    private String assignOwnerName;
+    private String assignCopyUserId;
+    private String assignCopyName;
+    private String assignImageUserId;
+    private String assignImageName;
+    private String assignPhase;
+    /** 列表摘要：文案标题 */
+    private String copyTitle;
+    private Boolean hasCopy;
+    private Integer bulletCount;
     private List<ImageItem> images = new ArrayList<>();
+    /** 详情：完整文案 */
+    private CopyItem copy;
 
     @Data
     public static class ImageItem {
@@ -27,6 +45,14 @@ public class XqAgentAiTestRespVO {
         private String url;
         private String displayUrl;
         private String ossUrl;
+    }
+
+    @Data
+    public static class CopyItem {
+        private String title;
+        private String description;
+        private List<String> bullets = new ArrayList<>();
+        private String productStyle;
     }
 
 }

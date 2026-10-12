@@ -33,6 +33,12 @@ public class XqProductRespVO {
     private BigDecimal exclusivePrice;
     /** 折扣价 */
     private BigDecimal discountedPrice;
+    /** 自提价 */
+    private BigDecimal pickupPrice;
+    /** 一件代发价（含运费合计优先） */
+    private BigDecimal dropshipPrice;
+    /** 一件代发运费 */
+    private BigDecimal dropshipShippingFee;
     private String currency;
     private Integer status;
     private String remark;
@@ -82,6 +88,9 @@ public class XqProductRespVO {
         private Integer qtyAvailable;
         private BigDecimal price;
         private BigDecimal discountedPrice;
+        private BigDecimal pickupPrice;
+        private BigDecimal dropshipPrice;
+        private BigDecimal dropshipShippingFee;
     }
 
 }

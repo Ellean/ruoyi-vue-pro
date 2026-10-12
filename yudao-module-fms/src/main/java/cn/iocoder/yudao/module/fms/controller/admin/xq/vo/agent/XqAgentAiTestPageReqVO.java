@@ -18,4 +18,7 @@ public class XqAgentAiTestPageReqVO extends PageParam {
     @Schema(description = "SKU / 品名关键字")
     private String keyword;
 
+    @Schema(description = "仅已选平台且绑定运营+美工")
+    private Boolean assignedOnly;
+
 }

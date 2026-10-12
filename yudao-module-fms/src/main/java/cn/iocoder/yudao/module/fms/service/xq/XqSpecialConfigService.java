@@ -30,7 +30,6 @@ import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqStoreMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqUpcPoolMapper;
 import cn.iocoder.yudao.module.system.api.user.AdminUserApi;
 import cn.iocoder.yudao.module.system.api.user.dto.AdminUserRespDTO;
-import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.Resource;
@@ -65,8 +64,8 @@ import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.XQ_UPC_RULE_D
 import static cn.iocoder.yudao.module.fms.enums.ErrorCodeConstants.XQ_UPC_RULE_NOT_EXISTS;
 
 /**
- * 特殊配置：SKU / 价格增幅 / UPC 池。写回原库 t_giga_*，平台/店铺用业务 ID，落库用 source_*。
- * 不要加事务，否则 @DS("xq") 会被主库 SqlSession 钉死。
+ * 特殊配置：SKU / 价格增幅 / UPC 池。
+ * 读写主库 t_giga_*；平台/店铺用业务 ID，落库用 source_*。
  */
 @Service
 @Validated
@@ -835,13 +834,9 @@ public class XqSpecialConfigService {
         }
     }
 
+    /** 历史双库切源；表已迁入 master，直接走主库。 */
     private static <T> T onXqDs(java.util.function.Supplier<T> action) {
-        DynamicDataSourceContextHolder.push("xq");
-        try {
-            return action.get();
-        } finally {
-            DynamicDataSourceContextHolder.poll();
-        }
+        return action.get();
     }
 
     private record StoreView(String id, String name) {

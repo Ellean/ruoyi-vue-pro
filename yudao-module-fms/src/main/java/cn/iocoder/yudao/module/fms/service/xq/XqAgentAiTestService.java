@@ -25,7 +25,8 @@ public class XqAgentAiTestService {
     public PageResult<XqAgentAiTestRespVO> getPage(XqAgentAiTestPageReqVO reqVO) {
         String sku = StrUtil.blankToDefault(reqVO.getSku(), "").trim();
         String keyword = StrUtil.blankToDefault(reqVO.getKeyword(), "").trim();
-        long total = agentAiResultMapper.selectPageCount(sku, keyword);
+        Boolean assignedOnly = Boolean.TRUE.equals(reqVO.getAssignedOnly()) ? Boolean.TRUE : null;
+        long total = agentAiResultMapper.selectPageCount(sku, keyword, assignedOnly);
         if (total <= 0) {
             return new PageResult<>(List.of(), 0L);
         }
@@ -33,7 +34,7 @@ public class XqAgentAiTestService {
         int pageSize = Math.min(Math.max(reqVO.getPageSize(), 1), 100);
         long offset = (long) (pageNo - 1) * pageSize;
         List<XqAgentAiResultRow> rows =
-                agentAiResultMapper.selectPage(sku, keyword, offset, pageSize);
+                agentAiResultMapper.selectPage(sku, keyword, assignedOnly, offset, pageSize);
         List<XqAgentAiTestRespVO> list = new ArrayList<>(rows.size());
         for (XqAgentAiResultRow row : rows) {
             list.add(toBrief(row));
@@ -51,6 +52,16 @@ public class XqAgentAiTestService {
         }
         XqAgentAiTestRespVO vo = toBrief(row);
         vo.setImages(parseImages(row.getAgentResultsJson()));
+        vo.setCopy(parseCopy(row.getAgentResultsJson()));
+        if (vo.getCopy() != null) {
+            vo.setHasCopy(true);
+            if (StrUtil.isBlank(vo.getCopyTitle())) {
+                vo.setCopyTitle(vo.getCopy().getTitle());
+            }
+            if (vo.getBulletCount() == null || vo.getBulletCount() <= 0) {
+                vo.setBulletCount(vo.getCopy().getBullets() == null ? 0 : vo.getCopy().getBullets().size());
+            }
+        }
         return vo;
     }
 
@@ -64,7 +75,77 @@ public class XqAgentAiTestService {
         vo.setBatchNo(row.getBatchNo());
         vo.setGeneratedAt(row.getGeneratedAt());
         vo.setUpdateDate(row.getUpdateDate());
+        vo.setListingPlatformId(row.getListingPlatformId());
+        vo.setPlatformName(row.getPlatformName());
+        vo.setShopId(row.getShopId());
+        vo.setListingCategoryId(row.getListingCategoryId());
+        vo.setCategoryName(row.getCategoryName());
+        vo.setAssignOwnerUserId(row.getAssignOwnerUserId());
+        vo.setAssignOwnerName(row.getAssignOwnerName());
+        vo.setAssignCopyUserId(row.getAssignCopyUserId());
+        vo.setAssignCopyName(row.getAssignCopyName());
+        vo.setAssignImageUserId(row.getAssignImageUserId());
+        vo.setAssignImageName(row.getAssignImageName());
+        vo.setAssignPhase(row.getAssignPhase());
+        vo.setCopyTitle(row.getCopyTitle());
+        vo.setHasCopy(Boolean.TRUE.equals(row.getHasCopy()));
+        vo.setBulletCount(row.getBulletCount());
         return vo;
+    }
+
+    private static XqAgentAiTestRespVO.CopyItem parseCopy(String json) {
+        if (StrUtil.isBlank(json)) {
+            return null;
+        }
+        try {
+            JSONObject root = JSONUtil.parseObj(json);
+            JSONObject copy = root.getJSONObject("copy");
+            if (copy == null || copy.isEmpty()) {
+                return null;
+            }
+            XqAgentAiTestRespVO.CopyItem item = new XqAgentAiTestRespVO.CopyItem();
+            item.setTitle(StrUtil.trim(copy.getStr("title")));
+            item.setDescription(StrUtil.trim(copy.getStr("description")));
+            item.setProductStyle(StrUtil.trim(copy.getStr("productStyle")));
+            List<String> bullets = new ArrayList<>();
+            Object rawBullets = copy.get("bullets");
+            if (!(rawBullets instanceof JSONArray) || ((JSONArray) rawBullets).isEmpty()) {
+                rawBullets = copy.get("bulletPoints");
+            }
+            if (rawBullets instanceof JSONArray arr) {
+                for (Object b : arr) {
+                    String text = bulletText(b);
+                    if (StrUtil.isNotBlank(text)) {
+                        bullets.add(text);
+                    }
+                }
+            }
+            item.setBullets(bullets);
+            boolean empty = StrUtil.isBlank(item.getTitle())
+                    && StrUtil.isBlank(item.getDescription())
+                    && bullets.isEmpty();
+            return empty ? null : item;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static String bulletText(Object raw) {
+        if (raw == null) {
+            return "";
+        }
+        if (raw instanceof CharSequence || raw instanceof Number) {
+            return String.valueOf(raw).trim();
+        }
+        try {
+            JSONObject obj = JSONUtil.parseObj(raw);
+            return StrUtil.blankToDefault(
+                    obj.getStr("text"),
+                    StrUtil.blankToDefault(obj.getStr("content"), obj.getStr("value"))
+            ).trim();
+        } catch (Exception ignored) {
+            return String.valueOf(raw).trim();
+        }
     }
 
     private static List<XqAgentAiTestRespVO.ImageItem> parseImages(String json) {

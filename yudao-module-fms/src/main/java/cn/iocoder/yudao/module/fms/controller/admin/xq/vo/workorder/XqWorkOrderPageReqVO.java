@@ -51,6 +51,9 @@ public class XqWorkOrderPageReqVO extends PageParam {
     @Schema(description = "上架分类 ID")
     private String listingCategoryId;
 
+    @Schema(description = "是否已选上架类目：true=已选 / false=未选")
+    private Boolean listingCategorySelected;
+
     @Schema(description = "认领人", hidden = true)
     private Long assigneeUserId;
 

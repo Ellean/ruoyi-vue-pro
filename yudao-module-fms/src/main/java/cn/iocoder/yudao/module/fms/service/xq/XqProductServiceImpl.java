@@ -131,6 +131,8 @@ public class XqProductServiceImpl implements XqProductService {
             for (XqGigaProductRow row : rows) {
                 byId.put(row.getId(), row);
             }
+        } else {
+            enrichPriceRoles(rows);
         }
         List<XqProductRespVO> list = new ArrayList<>(ids.size());
         Set<String> familySkus = new LinkedHashSet<>();
@@ -148,7 +150,9 @@ public class XqProductServiceImpl implements XqProductService {
             list.add(toResp(row, false));
         }
         if (fromIndex && !familySkus.isEmpty()) {
-            attachFamilyVariants(list, gigaProductMapper.selectIndexMembersByFamilySkus(familySkus));
+            List<XqGigaProductRow> members = gigaProductMapper.selectIndexMembersByFamilySkus(familySkus);
+            enrichPriceRoles(members);
+            attachFamilyVariants(list, members);
         } else {
             hydrateVariantCovers(list);
         }
@@ -166,15 +170,57 @@ public class XqProductServiceImpl implements XqProductService {
         XqGigaProductRow idx = gigaProductMapper.selectIndexBySku(row.getSku());
         if (idx != null && StrUtil.isNotBlank(idx.getFamilySku())) {
             vo.setFamilySku(idx.getFamilySku());
-            attachFamilyVariants(Collections.singletonList(vo),
-                    gigaProductMapper.selectIndexMembersByFamilySkus(
-                            Collections.singletonList(idx.getFamilySku())));
+            List<XqGigaProductRow> members = gigaProductMapper.selectIndexMembersByFamilySkus(
+                    Collections.singletonList(idx.getFamilySku()));
+            enrichPriceRoles(members);
+            attachFamilyVariants(Collections.singletonList(vo), members);
         } else {
             vo.setVariants(buildVariantStubs(row));
             hydrateVariantDetails(vo, row);
         }
         attachPickedPlatforms(Collections.singletonList(vo));
         return vo;
+    }
+
+    /** 家族索引行补齐自提 / 一件代发价（来自 snapshot.price_json） */
+    private void enrichPriceRoles(List<XqGigaProductRow> rows) {
+        if (CollUtil.isEmpty(rows)) {
+            return;
+        }
+        Set<String> skus = new LinkedHashSet<>();
+        for (XqGigaProductRow row : rows) {
+            if (row != null && StrUtil.isNotBlank(row.getSku())
+                    && (row.getPickupPrice() == null || row.getDropshipPrice() == null)) {
+                skus.add(row.getSku());
+            }
+        }
+        if (skus.isEmpty()) {
+            return;
+        }
+        Map<String, XqGigaProductRow> bySku = new LinkedHashMap<>();
+        for (XqGigaProductRow price : gigaProductMapper.selectPriceRolesBySkus(skus)) {
+            if (price != null && StrUtil.isNotBlank(price.getSku())) {
+                bySku.put(price.getSku(), price);
+            }
+        }
+        for (XqGigaProductRow row : rows) {
+            if (row == null || StrUtil.isBlank(row.getSku())) {
+                continue;
+            }
+            XqGigaProductRow price = bySku.get(row.getSku());
+            if (price == null) {
+                continue;
+            }
+            if (row.getPickupPrice() == null) {
+                row.setPickupPrice(price.getPickupPrice());
+            }
+            if (row.getDropshipPrice() == null) {
+                row.setDropshipPrice(price.getDropshipPrice());
+            }
+            if (row.getDropshipShippingFee() == null) {
+                row.setDropshipShippingFee(price.getDropshipShippingFee());
+            }
+        }
     }
 
     /** 进行中/已上架任务 → 卡片上的已选平台（家族 SKU 并集） */
@@ -321,6 +367,9 @@ public class XqProductServiceImpl implements XqProductService {
         v.setQtyAvailable(row.getQtyAvailable());
         v.setPrice(row.getPrice());
         v.setDiscountedPrice(row.getDiscountedPrice());
+        v.setPickupPrice(row.getPickupPrice());
+        v.setDropshipPrice(row.getDropshipPrice());
+        v.setDropshipShippingFee(row.getDropshipShippingFee());
         String color = XqGigaAssociateSupport.clean(row.getMainColor());
         v.setMainColor(color);
         v.setName(StrUtil.blankToDefault(XqGigaAssociateSupport.clean(row.getName()),

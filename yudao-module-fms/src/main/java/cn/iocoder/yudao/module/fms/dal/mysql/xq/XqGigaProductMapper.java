@@ -1,7 +1,6 @@
 package cn.iocoder.yudao.module.fms.dal.mysql.xq;
 
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow;
-import com.baomidou.dynamic.datasource.annotation.DS;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -9,10 +8,9 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * 读 xq-erp Giga 产品（数据源 xq → xq_finance_test）
+ * 读 Giga 选品产品（主库 ruoyi-vue-pro 内 t_gigab2b_*）
  */
 @Mapper
-@DS("xq")
 public interface XqGigaProductMapper {
 
     Long selectPageCount(@Param("name") String name,
@@ -38,6 +36,9 @@ public interface XqGigaProductMapper {
     List<XqGigaProductRow> selectIndexByListIds(@Param("ids") Collection<String> ids);
 
     List<XqGigaProductRow> selectIndexMembersByFamilySkus(@Param("familySkus") Collection<String> familySkus);
+
+    /** 批量读取快照合并价：自提 / 一件代发 */
+    List<XqGigaProductRow> selectPriceRolesBySkus(@Param("skus") Collection<String> skus);
 
     /** 下发成功：在快照 detail_json.xqPickedPlatforms 打平台标记 */
     int mergePickedPlatform(@Param("sku") String sku,

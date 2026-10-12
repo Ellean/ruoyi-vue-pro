@@ -5,7 +5,6 @@ import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqListingPlatformDO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqPlatformDO;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqListingPlatformMapper;
 import cn.iocoder.yudao.module.fms.dal.mysql.xq.XqPlatformMapper;
-import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import jakarta.annotation.Resource;
 import org.springframework.stereotype.Component;
 
@@ -101,7 +100,7 @@ public class XqListingModeHelper {
     }
 
     private XqListingPlatformDO loadLegacy(String sourcePlatformId, String code) {
-        DynamicDataSourceContextHolder.push("xq");
+        // t_giga_listing_platform 已在 master
         try {
             if (StrUtil.isNotBlank(sourcePlatformId)) {
                 XqListingPlatformDO byId = listingPlatformMapper.selectById(sourcePlatformId.trim());
@@ -115,8 +114,6 @@ public class XqListingModeHelper {
             return null;
         } catch (Exception ex) {
             return null;
-        } finally {
-            DynamicDataSourceContextHolder.poll();
         }
     }
 

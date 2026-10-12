@@ -32,6 +32,12 @@ public class XqGigaProductRow {
     private BigDecimal exclusivePrice;
     /** 折扣价 */
     private BigDecimal discountedPrice;
+    /** 自提价（price_json.pickupPrice） */
+    private BigDecimal pickupPrice;
+    /** 一件代发到手价（mergedCost 或货价+运费） */
+    private BigDecimal dropshipPrice;
+    /** 一件代发运费 */
+    private BigDecimal dropshipShippingFee;
     private String currency;
     private Boolean skuAvailable;
     private String listedTag;
