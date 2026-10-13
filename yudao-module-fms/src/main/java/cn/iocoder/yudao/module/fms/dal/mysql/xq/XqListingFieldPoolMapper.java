@@ -28,4 +28,19 @@ public interface XqListingFieldPoolMapper extends BaseMapperX<XqListingFieldPool
                 .orderByAsc(XqListingFieldPoolDO::getLabel));
     }
 
+    default int deleteByPlatformIds(Collection<String> platformIds) {
+        if (platformIds == null || platformIds.isEmpty()) {
+            return 0;
+        }
+        List<String> ids = platformIds.stream()
+                .filter(s -> s != null && !s.isBlank())
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return 0;
+        }
+        return delete(new LambdaQueryWrapperX<XqListingFieldPoolDO>()
+                .in(XqListingFieldPoolDO::getPlatformId, ids));
+    }
+
 }

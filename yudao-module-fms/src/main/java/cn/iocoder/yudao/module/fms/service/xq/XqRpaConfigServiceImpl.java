@@ -144,6 +144,8 @@ public class XqRpaConfigServiceImpl implements XqRpaConfigService {
         // 补齐账号/密码/站点（调用方未显式传入时）
         Map<String, Object> defaults = buildInputParam(userId, row);
         defaults.forEach(payload::putIfAbsent);
+        // 影刀主流程参数挂在 globalConfig 下：同时下发扁平 + 嵌套，兼容旧拉取与当前流程定义
+        nestLoginIntoGlobalConfig(payload);
         return launcher.launch(row, jobKind, jobUuid, payload);
     }
 
@@ -171,7 +173,47 @@ public class XqRpaConfigServiceImpl implements XqRpaConfigService {
             param.put("租户", tid);
             param.put("tenantId", tid);
         }
+        nestLoginIntoGlobalConfig(param);
         return param;
+    }
+
+    /**
+     * 影刀流程定义多为 globalConfig.http / 账户 / 密码；控制中枢旧示例又是扁平字段。
+     * 两边都写，保证参数能进主流程。
+     */
+    @SuppressWarnings("unchecked")
+    private static void nestLoginIntoGlobalConfig(Map<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return;
+        }
+        Object http = payload.get("http");
+        Object account = payload.get("账户");
+        Object password = payload.get("密码");
+        if (http == null && account == null && password == null) {
+            return;
+        }
+        Map<String, Object> gc;
+        Object existing = payload.get("globalConfig");
+        if (existing instanceof Map<?, ?> map) {
+            gc = new LinkedHashMap<>();
+            map.forEach((k, v) -> {
+                if (k != null) {
+                    gc.put(String.valueOf(k), v);
+                }
+            });
+        } else {
+            gc = new LinkedHashMap<>();
+        }
+        if (http != null) {
+            gc.putIfAbsent("http", http);
+        }
+        if (account != null) {
+            gc.putIfAbsent("账户", account);
+        }
+        if (password != null) {
+            gc.putIfAbsent("密码", password);
+        }
+        payload.put("globalConfig", gc);
     }
 
     private static String trimOrNull(String value) {

@@ -114,17 +114,26 @@
           NULLIF(s.discounted_price, 0),
           CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.discountedPrice')) AS DECIMAL(14,4))
         ) AS discountedPrice,
-        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.pickupPrice')) AS DECIMAL(14,4)) AS pickupPrice,
+        /* 自提运费 / 代发运费：只取运费字段，不做货价、不做相加猜数 */
         COALESCE(
-          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.mergedCost')) AS DECIMAL(14,4)),
-          CASE
-            WHEN JSON_EXTRACT(s.price_json, '$.price') IS NOT NULL THEN
-              CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.price')) AS DECIMAL(14,4))
-              + IFNULL(CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)), 0)
-            ELSE NULL
-          END
-        ) AS dropshipPrice,
-        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)) AS dropshipShippingFee,
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.pickupShippingFee')), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+            s.price_json,
+            REPLACE(JSON_UNQUOTE(JSON_SEARCH(s.price_json, 'one', 'pickup', NULL, '$.priceSources[*].priceRole')),
+                    '.priceRole', '.shippingFee')
+          )), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.shippingFeeFree')), 'null'), '') AS DECIMAL(14,4))
+        ) AS pickupShippingFee,
+        COALESCE(
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+            s.price_json,
+            REPLACE(JSON_UNQUOTE(JSON_SEARCH(s.price_json, 'one', 'dropship', NULL, '$.priceSources[*].priceRole')),
+                    '.priceRole', '.shippingFee')
+          )), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.shippingFeePaid')), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.shippingFee')), 'null'), '') AS DECIMAL(14,4))
+        ) AS dropshipShippingFee,
         COALESCE(s.currency, JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.currency')), 'USD') AS currency,
         s.sku_available AS skuAvailable,
         CASE
@@ -182,17 +191,26 @@
           NULLIF(s.discounted_price, 0),
           CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.discountedPrice')) AS DECIMAL(14,4))
         ) AS discountedPrice,
-        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.pickupPrice')) AS DECIMAL(14,4)) AS pickupPrice,
+        /* 自提运费 / 代发运费：只取运费字段，不做货价、不做相加猜数 */
         COALESCE(
-          CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.mergedCost')) AS DECIMAL(14,4)),
-          CASE
-            WHEN JSON_EXTRACT(s.price_json, '$.price') IS NOT NULL THEN
-              CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.price')) AS DECIMAL(14,4))
-              + IFNULL(CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)), 0)
-            ELSE NULL
-          END
-        ) AS dropshipPrice,
-        CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)) AS dropshipShippingFee,
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.pickupShippingFee')), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+            s.price_json,
+            REPLACE(JSON_UNQUOTE(JSON_SEARCH(s.price_json, 'one', 'pickup', NULL, '$.priceSources[*].priceRole')),
+                    '.priceRole', '.shippingFee')
+          )), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.shippingFeeFree')), 'null'), '') AS DECIMAL(14,4))
+        ) AS pickupShippingFee,
+        COALESCE(
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+            s.price_json,
+            REPLACE(JSON_UNQUOTE(JSON_SEARCH(s.price_json, 'one', 'dropship', NULL, '$.priceSources[*].priceRole')),
+                    '.priceRole', '.shippingFee')
+          )), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.shippingFeePaid')), 'null'), '') AS DECIMAL(14,4)),
+          CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.shippingFee')), 'null'), '') AS DECIMAL(14,4))
+        ) AS dropshipShippingFee,
         COALESCE(s.currency, JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.currency')), 'USD') AS currency,
         s.sku_available AS skuAvailable,
         CASE
@@ -501,8 +519,7 @@
         i.price AS price,
         i.exclusive_price AS exclusivePrice,
         i.discounted_price AS discountedPrice,
-        CAST(NULL AS DECIMAL(14,4)) AS pickupPrice,
-        CAST(NULL AS DECIMAL(14,4)) AS dropshipPrice,
+        CAST(NULL AS DECIMAL(14,4)) AS pickupShippingFee,
         CAST(NULL AS DECIMAL(14,4)) AS dropshipShippingFee,
         COALESCE(i.currency, 'USD') AS currency,
         i.sku_available AS skuAvailable,
@@ -516,21 +533,29 @@
         i.family_sku AS familySku
     </sql>
 
-    <!-- 按 SKU 批量取合并价（自提 / 一件代发），供家族索引列表补字段 -->
+    <!-- 按 SKU 批量取自提/代发运费，供家族索引列表补字段 -->
     <select id="selectPriceRolesBySkus" resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductRow">
         SELECT
             s.sku AS sku,
-            CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.pickupPrice')) AS DECIMAL(14,4)) AS pickupPrice,
             COALESCE(
-              CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.mergedCost')) AS DECIMAL(14,4)),
-              CASE
-                WHEN JSON_EXTRACT(s.price_json, '$.price') IS NOT NULL THEN
-                  CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.price')) AS DECIMAL(14,4))
-                  + IFNULL(CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)), 0)
-                ELSE NULL
-              END
-            ) AS dropshipPrice,
-            CAST(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')) AS DECIMAL(14,4)) AS dropshipShippingFee
+              CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.pickupShippingFee')), 'null'), '') AS DECIMAL(14,4)),
+              CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+                s.price_json,
+                REPLACE(JSON_UNQUOTE(JSON_SEARCH(s.price_json, 'one', 'pickup', NULL, '$.priceSources[*].priceRole')),
+                        '.priceRole', '.shippingFee')
+              )), 'null'), '') AS DECIMAL(14,4)),
+              CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.shippingFeeFree')), 'null'), '') AS DECIMAL(14,4))
+            ) AS pickupShippingFee,
+            COALESCE(
+              CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.dropshipShippingFee')), 'null'), '') AS DECIMAL(14,4)),
+              CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+                s.price_json,
+                REPLACE(JSON_UNQUOTE(JSON_SEARCH(s.price_json, 'one', 'dropship', NULL, '$.priceSources[*].priceRole')),
+                        '.priceRole', '.shippingFee')
+              )), 'null'), '') AS DECIMAL(14,4)),
+              CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.shippingFeePaid')), 'null'), '') AS DECIMAL(14,4)),
+              CAST(NULLIF(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(s.price_json, '$.shippingFee')), 'null'), '') AS DECIMAL(14,4))
+            ) AS dropshipShippingFee
         FROM (
             SELECT s1.sku, s1.price_json,
                    ROW_NUMBER() OVER (
@@ -621,5 +646,81 @@
         WHERE sku = #{sku}
           AND JSON_VALID(detail_json)
     </update>
+
+    <select id="selectListMetaById"
+            resultType="cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqGigaProductListMeta">
+        SELECT id AS id,
+               sku AS sku,
+               user_id AS userId,
+               giga_config_id AS gigaConfigId,
+               product_name AS productName
+        FROM t_gigab2b_product_list
+        WHERE id = #{id}
+        LIMIT 1
+    </select>
+
+    <insert id="upsertSnapshot">
+        INSERT INTO t_gigab2b_product_snapshot
+          (id, user_id, giga_config_id, source_platform, sku, product_name, sku_available,
+           currency, price, exclusive_price, discounted_price, shipping_fee,
+           seller_available_inventory, buyer_available_inventory,
+           detail_json, price_json, inventory_json, sync_batch_no, sync_time, create_date, update_date)
+        VALUES
+          (#{id}, #{userId}, #{gigaConfigId}, 'giga', #{sku}, #{productName},
+           #{skuAvailable}, #{currency}, #{price}, #{exclusivePrice}, #{discountedPrice}, #{shippingFee},
+           #{sellerAvailableInventory}, #{buyerAvailableInventory},
+           #{detailJson}, #{priceJson}, #{inventoryJson}, #{syncBatchNo}, #{now}, #{now}, #{now})
+        ON DUPLICATE KEY UPDATE
+           product_name = COALESCE(NULLIF(VALUES(product_name), ''), product_name),
+           sku_available = COALESCE(VALUES(sku_available), sku_available),
+           currency = COALESCE(VALUES(currency), currency),
+           price = COALESCE(VALUES(price), price),
+           exclusive_price = COALESCE(VALUES(exclusive_price), exclusive_price),
+           discounted_price = COALESCE(VALUES(discounted_price), discounted_price),
+           shipping_fee = COALESCE(VALUES(shipping_fee), shipping_fee),
+           seller_available_inventory = COALESCE(VALUES(seller_available_inventory), seller_available_inventory),
+           buyer_available_inventory = COALESCE(VALUES(buyer_available_inventory), buyer_available_inventory),
+           detail_json = IFNULL(VALUES(detail_json), detail_json),
+           price_json = IFNULL(VALUES(price_json), price_json),
+           inventory_json = IFNULL(VALUES(inventory_json), inventory_json),
+           sync_batch_no = VALUES(sync_batch_no),
+           sync_time = VALUES(sync_time),
+           update_date = VALUES(update_date)
+    </insert>
+
+    <select id="selectExistingListSkus" resultType="string">
+        SELECT DISTINCT sku
+        FROM t_gigab2b_product_list
+        WHERE sku IN
+        <foreach collection="skus" item="sku" open="(" separator="," close=")">
+            #{sku}
+        </foreach>
+    </select>
+
+    <insert id="insertProductList">
+        INSERT INTO t_gigab2b_product_list
+          (id, user_id, giga_config_id, source_platform, sku, product_name,
+           update_time, first_arrival_date, added_time,
+           sync_batch_no, sync_time, create_date, update_date)
+        VALUES
+          (#{id}, #{userId}, #{gigaConfigId}, 'giga', #{sku}, #{productName},
+           #{updateTime}, #{firstArrivalDate}, #{addedTime},
+           #{syncBatchNo}, #{now}, #{now}, #{now})
+    </insert>
+
+    <insert id="upsertFamilyIndexStub">
+        INSERT INTO t_gigab2b_product_family_index
+          (family_sku, sku, is_primary, collected, sort_no, member_count, list_id,
+           item_code, product_name, variant_label, source_platform,
+           sync_time, create_date, update_date)
+        VALUES
+          (#{sku}, #{sku}, 1, 1, 0, 1, #{listId},
+           #{sku}, #{productName}, #{sku}, 'giga',
+           #{now}, #{now}, #{now})
+        ON DUPLICATE KEY UPDATE
+           list_id = IFNULL(list_id, VALUES(list_id)),
+           product_name = COALESCE(NULLIF(VALUES(product_name), ''), product_name),
+           update_date = VALUES(update_date)
+    </insert>
 
 </mapper>

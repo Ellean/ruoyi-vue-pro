@@ -25,6 +25,7 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
         }
         // 图片池：扁平拉「相关家族全部 SKU」，UI 不区分主/变体
         boolean imagePoolFlat = reqVO.getMineImageUserId() != null;
+        boolean selectedPool = Boolean.TRUE.equals(reqVO.getSelectedPool());
         Long imageArtistId = null;
         if (imagePoolFlat) {
             imageArtistId = reqVO.getImageUserId() != null
@@ -35,7 +36,6 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .likeIfPresent(XqWorkOrderDO::getTitle, reqVO.getTitle())
                 .likeIfPresent(XqWorkOrderDO::getExternalSku, reqVO.getExternalSku())
                 .eqIfPresent(XqWorkOrderDO::getStatus, reqVO.getStatus())
-                .eqIfPresent(XqWorkOrderDO::getGigaCategoryId, reqVO.getGigaCategoryId())
                 .eqIfPresent(XqWorkOrderDO::getAssigneeUserId, reqVO.getAssigneeUserId())
                 .eqIfPresent(XqWorkOrderDO::getCopyUserId, reqVO.getCopyUserId())
                 // 图片池用家族展开，避免只 eq 美工时漏掉未单独写 imageUserId 的变体行
@@ -45,6 +45,11 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eqIfPresent(XqWorkOrderDO::getListingPlatformId, reqVO.getListingPlatformId())
                 .eqIfPresent(XqWorkOrderDO::getListingShopId, reqVO.getListingShopId())
                 .eqIfPresent(XqWorkOrderDO::getListingCategoryId, reqVO.getListingCategoryId());
+        if (reqVO.getGigaCategoryIds() != null && !reqVO.getGigaCategoryIds().isEmpty()) {
+            wrapper.in(XqWorkOrderDO::getGigaCategoryId, reqVO.getGigaCategoryIds());
+        } else {
+            wrapper.eqIfPresent(XqWorkOrderDO::getGigaCategoryId, reqVO.getGigaCategoryId());
+        }
         if (Boolean.TRUE.equals(reqVO.getListingCategorySelected())) {
             wrapper.isNotNull(XqWorkOrderDO::getListingCategoryId)
                     .ne(XqWorkOrderDO::getListingCategoryId, "");
@@ -53,8 +58,12 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                     .or()
                     .eq(XqWorkOrderDO::getListingCategoryId, ""));
         }
+        if (selectedPool) {
+            applySelectedPoolFilter(wrapper);
+        }
         applyFlowStatus(wrapper, reqVO.getFlowStatus());
-        if (reqVO.getBoundUserId() != null && !imagePoolFlat) {
+        // 已选产品池给运营看全量旧数据，不按认领人收窄
+        if (reqVO.getBoundUserId() != null && !imagePoolFlat && !selectedPool) {
             // 文案/任务工作台：下发时已经按认领人切开，列表不再按文案池二次筛选
             wrapper.eq(XqWorkOrderDO::getAssigneeUserId, reqVO.getBoundUserId());
         }
@@ -91,6 +100,32 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
         }
         wrapper.orderByDesc(XqWorkOrderDO::getId);
         return selectPage(reqVO, wrapper);
+    }
+
+    /**
+     * 已选产品池：进行中 + 已领取 + 有文案 + 已跑图，但未选平台或分类。
+     */
+    private static void applySelectedPoolFilter(LambdaQueryWrapperX<XqWorkOrderDO> wrapper) {
+        wrapper.eq(XqWorkOrderDO::getStatus, 10);
+        // 已领取（运营/文案/美工任一）
+        wrapper.and(w -> w.isNotNull(XqWorkOrderDO::getAssigneeUserId)
+                .or().isNotNull(XqWorkOrderDO::getCopyUserId)
+                .or().isNotNull(XqWorkOrderDO::getImageUserId));
+        // 写过文案
+        wrapper.and(w -> w.and(c -> c.isNotNull(XqWorkOrderDO::getContentTitle)
+                        .ne(XqWorkOrderDO::getContentTitle, ""))
+                .or(c -> c.isNotNull(XqWorkOrderDO::getCopyResultJson)
+                        .ne(XqWorkOrderDO::getCopyResultJson, "")
+                        .ne(XqWorkOrderDO::getCopyResultJson, "{}")));
+        // 跑完图片（出图/审核通过，或有主图）
+        wrapper.and(w -> w.in(XqWorkOrderDO::getImageStatus, "generated", "revised", "done")
+                .or(c -> c.isNotNull(XqWorkOrderDO::getGeneratedImageUrl)
+                        .ne(XqWorkOrderDO::getGeneratedImageUrl, "")));
+        // 未选平台 或 未选分类
+        wrapper.and(w -> w.isNull(XqWorkOrderDO::getListingPlatformId)
+                .or().eq(XqWorkOrderDO::getListingPlatformId, "")
+                .or().isNull(XqWorkOrderDO::getListingCategoryId)
+                .or().eq(XqWorkOrderDO::getListingCategoryId, ""));
     }
 
     private static void applyFlowStatus(LambdaQueryWrapperX<XqWorkOrderDO> wrapper, String flowStatus) {

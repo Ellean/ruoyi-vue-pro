@@ -3,6 +3,7 @@ package cn.iocoder.yudao.module.fms.service.xq;
 import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqAssignableImageUserRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderAssignImageReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBindListingReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBatchIdsReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCompleteReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderDispatchReqVO;
@@ -80,6 +81,9 @@ public interface XqWorkOrderService {
 
     /** 批量把已完成文案的任务分配给美工 */
     int batchAssignImage(@Valid XqWorkOrderAssignImageReqVO reqVO, Long operatorUserId);
+
+    /** 已选产品池：补绑平台 + 分类（默认同步整家族） */
+    int bindListing(@Valid XqWorkOrderBindListingReqVO reqVO, Long operatorUserId);
 
     void updateImageStatus(@Valid XqWorkOrderImageStatusReqVO reqVO);
 

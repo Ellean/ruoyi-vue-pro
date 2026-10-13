@@ -8,6 +8,7 @@ import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqAssignableImageUserRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderAssignImageReqVO;
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBindListingReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBatchIdsReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderCompleteReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderDispatchReqVO;
@@ -83,6 +84,8 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
     @Resource
     private XqStoreScopeService storeScopeService;
     @Resource
+    private XqGigaCategoryService gigaCategoryService;
+    @Resource
     private XqListingModeHelper listingModeHelper;
     @Resource
     private XqListingCredentialService listingCredentialService;
@@ -99,6 +102,13 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
 
     @Override
     public PageResult<XqWorkOrderDO> getWorkOrderPage(XqWorkOrderPageReqVO pageReqVO) {
+        if (pageReqVO != null && pageReqVO.getGigaCategoryId() != null
+                && (pageReqVO.getGigaCategoryIds() == null || pageReqVO.getGigaCategoryIds().isEmpty())) {
+            // 大健云仓类目：选父级时含子树
+            pageReqVO.setGigaCategoryIds(
+                    gigaCategoryService.listSubtreeGigaIds(pageReqVO.getGigaCategoryId()));
+            pageReqVO.setGigaCategoryId(null);
+        }
         PageResult<XqWorkOrderDO> page = workOrderMapper.selectPage(pageReqVO);
         // 纠正历史「合并父/家族变体原图」污染，图片池刷新即可看到本 SKU 图
         if (page != null && CollUtil.isNotEmpty(page.getList())) {
@@ -1222,6 +1232,65 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         }
         if (count == 0) {
             throw exception(XQ_WORK_ORDER_COPY_REQUIRED);
+        }
+        return count;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int bindListing(XqWorkOrderBindListingReqVO reqVO, Long operatorUserId) {
+        if (reqVO == null || CollUtil.isEmpty(reqVO.getIds())) {
+            throw exception(XQ_DISPATCH_EMPTY);
+        }
+        if (StrUtil.isBlank(reqVO.getListingPlatformId()) || StrUtil.isBlank(reqVO.getListingCategoryId())) {
+            throw exception(XQ_DISPATCH_LISTING_REQUIRED);
+        }
+        if (storeScopeService.getPlatform(XqStoreScopeService.parseLong(reqVO.getListingPlatformId())) == null) {
+            throw exception(XQ_PLATFORM_NOT_EXISTS);
+        }
+        if (StrUtil.isNotBlank(reqVO.getListingShopId())) {
+            Long shopId = XqStoreScopeService.parseLong(reqVO.getListingShopId());
+            if (storeScopeService.getStore(shopId) == null) {
+                throw exception(XQ_STORE_NOT_EXISTS);
+            }
+            if (operatorUserId != null && !storeScopeService.isStoreAllowed(operatorUserId, shopId)) {
+                throw exception(XQ_STORE_ACCESS_DENIED);
+            }
+        }
+        boolean expand = reqVO.getExpandFamily() == null || Boolean.TRUE.equals(reqVO.getExpandFamily());
+        LinkedHashSet<Long> ids = expand
+                ? expandAssignImageFamilyIds(reqVO.getIds())
+                : new LinkedHashSet<>(reqVO.getIds().stream().filter(Objects::nonNull).toList());
+        int count = 0;
+        for (Long id : ids) {
+            XqWorkOrderDO order = validateDoing(id);
+            String sku = StrUtil.blankToDefault(order.getExternalSku(), "").trim();
+            if (StrUtil.isNotBlank(sku)) {
+                XqWorkOrderDO conflict = workOrderMapper.selectActiveBySkuAndPlatform(
+                        sku, reqVO.getListingPlatformId());
+                if (conflict != null && !Objects.equals(conflict.getId(), order.getId())
+                        && !ids.contains(conflict.getId())) {
+                    throw exception(XQ_WORK_ORDER_ALREADY_EXISTS, sku);
+                }
+            }
+            XqWorkOrderDO update = new XqWorkOrderDO();
+            update.setId(id);
+            update.setListingPlatformId(reqVO.getListingPlatformId().trim());
+            update.setListingPlatformName(StrUtil.trim(reqVO.getListingPlatformName()));
+            update.setListingCategoryId(reqVO.getListingCategoryId().trim());
+            update.setListingCategoryName(StrUtil.trim(reqVO.getListingCategoryName()));
+            if (StrUtil.isNotBlank(reqVO.getListingShopId())) {
+                update.setListingShopId(reqVO.getListingShopId().trim());
+                update.setListingShopName(StrUtil.trim(reqVO.getListingShopName()));
+            }
+            // 已有图文时，补绑后进入可上架/待审链路
+            if ("done".equals(order.getImageStatus())
+                    || "generated".equals(order.getImageStatus())
+                    || "revised".equals(order.getImageStatus())) {
+                update.setWorkflowPhase(StrUtil.blankToDefault(order.getWorkflowPhase(), "list"));
+            }
+            workOrderMapper.updateById(update);
+            count++;
         }
         return count;
     }

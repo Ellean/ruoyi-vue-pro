@@ -212,6 +212,8 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_GIGA_CREDENTIAL_NOT_EXISTS = new ErrorCode(1_052_200_040, "产品库凭证不存在");
     ErrorCode XQ_GIGA_CREDENTIAL_SECRET_REQUIRED = new ErrorCode(1_052_200_041, "请填写 Client Secret");
     ErrorCode XQ_GIGA_CREDENTIAL_PRICE_ROLE_INVALID = new ErrorCode(1_052_200_042, "价格角色须为 pickup(自提) 或 dropship(一键代发)");
+    ErrorCode XQ_GIGA_ENSURE_NO_CREDENTIAL = new ErrorCode(1_052_200_043, "未配置可用的大健云仓凭证，请先在产品库凭证中启用");
+    ErrorCode XQ_GIGA_ENSURE_FAIL = new ErrorCode(1_052_200_044, "大健云仓拉取详情失败：{}");
     ErrorCode XQ_PLATFORM_NOT_EXISTS = new ErrorCode(1_052_200_050, "平台不存在");
     ErrorCode XQ_PLATFORM_CODE_DUPLICATE = new ErrorCode(1_052_200_051, "平台编码已存在");
     ErrorCode XQ_PLATFORM_HAS_STORE = new ErrorCode(1_052_200_052, "平台下仍有店铺，不能删除");

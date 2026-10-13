@@ -562,12 +562,15 @@ public class XqListingCatalogService {
         categoryFieldConfigMapper.updateById(update);
     }
 
+    /**
+     * 平台字段池展示：只读 t_giga_listing_field_pool（同 field_code 已去重）。
+     * <p>禁止在请求路径扫全部分类模板（会卡死）；池空时仅用 common/special 轻量回填并落库。
+     */
     public XqFieldPoolRespVO getFieldPool(String platformId, String shopId, String country) {
         XqFieldPoolRespVO out = new XqFieldPoolRespVO();
         out.setPlatformId(StrUtil.blankToDefault(platformId, ""));
         Set<String> templatePlatformIds = resolveTemplatePlatformIds(platformId);
         Map<String, XqCategoryFieldTemplateRespVO.Field> byCode = new java.util.LinkedHashMap<>();
-        Set<String> categoryIds = new HashSet<>();
         String loadedFrom = "";
         if (!templatePlatformIds.isEmpty()) {
             List<XqListingFieldPoolDO> poolRows =
@@ -579,40 +582,16 @@ public class XqListingCatalogService {
                 loadedFrom = "pool";
             }
         }
+        // 池空：只用拆分表（体量小）即时投影并落库；绝不扫类目模板
         if (byCode.isEmpty() && !templatePlatformIds.isEmpty()) {
-            List<XqListingFieldCommonDO> commons =
-                    onXqDs(() -> listingFieldCommonMapper.selectByPlatformIds(templatePlatformIds));
-            for (XqListingFieldCommonDO row : commons) {
-                putPoolField(byCode, toFieldFromSplit(
-                        row.getFieldCode(), row.getLabel(), row.getFieldType(),
-                        row.getRequired(), row.getRequirementLevel(),
-                        row.getValuesListCode(), row.getFieldJson(), "common"));
-            }
-            List<XqListingFieldSpecialDO> specials =
-                    onXqDs(() -> listingFieldSpecialMapper.selectByPlatformIds(templatePlatformIds));
-            for (XqListingFieldSpecialDO row : specials) {
-                putPoolField(byCode, toFieldFromSplit(
-                        row.getFieldCode(), row.getLabel(), row.getFieldType(),
-                        row.getRequired(), row.getRequirementLevel(),
-                        row.getValuesListCode(), row.getFieldJson(), "special"));
-            }
-            if (!byCode.isEmpty()) {
-                loadedFrom = "split";
-            }
-        }
-        List<XqListingCategoryFieldTemplateDO> templates = List.of();
-        if (byCode.isEmpty() && !templatePlatformIds.isEmpty()) {
-            templates = onXqDs(() -> categoryFieldTemplateMapper.selectByPlatformIds(templatePlatformIds));
-        }
-        for (XqListingCategoryFieldTemplateDO row : templates) {
-            if (row == null || StrUtil.isBlank(row.getTemplateJson())) {
-                continue;
-            }
-            categoryIds.add(StrUtil.blankToDefault(row.getCategoryId(), ""));
-            XqCategoryFieldTemplateRespVO parsed = toCategoryFieldTemplateVo(row, "");
-            row.setTemplateJson(null);
-            for (XqCategoryFieldTemplateRespVO.Field field : parsed.getFields()) {
-                putPoolField(byCode, field);
+            int written = rebuildFieldPoolFromSplit(templatePlatformIds);
+            if (written > 0) {
+                List<XqListingFieldPoolDO> poolRows =
+                        onXqDs(() -> listingFieldPoolMapper.selectByPlatformIds(templatePlatformIds));
+                for (XqListingFieldPoolDO row : poolRows) {
+                    putPoolField(byCode, toFieldFromPool(row));
+                }
+                loadedFrom = "split-rebuild";
             }
         }
         List<XqCategoryFieldTemplateRespVO.Field> fields;
@@ -627,8 +606,8 @@ public class XqListingCatalogService {
             out.setCategoryCount(0);
         } else {
             fields = new ArrayList<>(byCode.values());
-            out.setSourceHint(StrUtil.blankToDefault(loadedFrom, "catalog"));
-            out.setCategoryCount(categoryIds.size());
+            out.setSourceHint(StrUtil.blankToDefault(loadedFrom, "pool"));
+            out.setCategoryCount(0);
         }
         int required = 0;
         for (XqCategoryFieldTemplateRespVO.Field field : fields) {
@@ -678,6 +657,197 @@ public class XqListingCatalogService {
         return out;
     }
 
+    /**
+     * 管理端：按业务平台重建字段池（优先 common/special；无拆分时才扫该类目模板）。
+     * 扫模板可能较慢，仅用于运维/导入后补偿，不走列表请求。
+     */
+    public Map<String, Object> rebuildFieldPool(String platformId, boolean includeTemplates) {
+        Set<String> templatePlatformIds = resolveTemplatePlatformIds(platformId);
+        if (templatePlatformIds.isEmpty()) {
+            return Map.of("platformId", StrUtil.blankToDefault(platformId, ""),
+                    "fieldCount", 0, "source", "empty");
+        }
+        int fromSplit = rebuildFieldPoolFromSplit(templatePlatformIds);
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("platformId", StrUtil.blankToDefault(platformId, ""));
+        result.put("templatePlatformIds", new ArrayList<>(templatePlatformIds));
+        if (fromSplit > 0 && !includeTemplates) {
+            result.put("fieldCount", fromSplit);
+            result.put("source", "split");
+            return result;
+        }
+        int fromTpl = rebuildFieldPoolFromTemplates(templatePlatformIds, fromSplit > 0);
+        result.put("fieldCount", fromTpl);
+        result.put("source", fromSplit > 0 ? "split+template" : "template");
+        return result;
+    }
+
+    /** 仅用 common/special 重建字段池（快，请求空池兜底可用） */
+    private int rebuildFieldPoolFromSplit(Collection<String> templatePlatformIds) {
+        if (templatePlatformIds == null || templatePlatformIds.isEmpty()) {
+            return 0;
+        }
+        List<XqListingFieldCommonDO> commons =
+                onXqDs(() -> listingFieldCommonMapper.selectByPlatformIds(templatePlatformIds));
+        List<XqListingFieldSpecialDO> specials =
+                onXqDs(() -> listingFieldSpecialMapper.selectByPlatformIds(templatePlatformIds));
+        if (commons.isEmpty() && specials.isEmpty()) {
+            return 0;
+        }
+        Map<String, XqListingFieldPoolDO> byKey = new java.util.LinkedHashMap<>();
+        for (XqListingFieldCommonDO row : commons) {
+            mergePoolRow(byKey, row.getPlatformId(), row.getFieldCode(), row.getLabel(),
+                    row.getFieldType(), row.getRequired(), row.getRequirementLevel(),
+                    row.getValuesListCode(), row.getFieldJson(), "common");
+        }
+        for (XqListingFieldSpecialDO row : specials) {
+            mergePoolRow(byKey, row.getPlatformId(), row.getFieldCode(), row.getLabel(),
+                    row.getFieldType(), row.getRequired(), row.getRequirementLevel(),
+                    row.getValuesListCode(), row.getFieldJson(), "special");
+        }
+        persistPoolRows(templatePlatformIds, byKey.values(), true);
+        return byKey.size();
+    }
+
+    /**
+     * 从类目模板投影到字段池。逐条按 id 取 template_json，避免一次拉爆。
+     * @param mergeKeepExisting true 时保留已有拆分字段并追加模板字段
+     */
+    private int rebuildFieldPoolFromTemplates(Collection<String> templatePlatformIds,
+                                              boolean mergeKeepExisting) {
+        if (templatePlatformIds == null || templatePlatformIds.isEmpty()) {
+            return 0;
+        }
+        Map<String, XqListingFieldPoolDO> byKey = new java.util.LinkedHashMap<>();
+        if (mergeKeepExisting) {
+            List<XqListingFieldPoolDO> exist =
+                    onXqDs(() -> listingFieldPoolMapper.selectByPlatformIds(templatePlatformIds));
+            for (XqListingFieldPoolDO row : exist) {
+                if (row == null || StrUtil.isBlank(row.getFieldCode())) {
+                    continue;
+                }
+                byKey.put(poolKey(row.getPlatformId(), normalizePoolFieldCode(row.getFieldCode())), row);
+            }
+        }
+        List<XqListingCategoryFieldTemplateDO> meta = onXqDs(() ->
+                categoryFieldTemplateMapper.selectList(
+                        new cn.iocoder.yudao.framework.mybatis.core.query.LambdaQueryWrapperX<XqListingCategoryFieldTemplateDO>()
+                                .in(XqListingCategoryFieldTemplateDO::getPlatformId, templatePlatformIds)
+                                .select(XqListingCategoryFieldTemplateDO::getId,
+                                        XqListingCategoryFieldTemplateDO::getPlatformId)));
+        for (XqListingCategoryFieldTemplateDO m : meta) {
+            if (m == null || m.getId() == null) {
+                continue;
+            }
+            XqListingCategoryFieldTemplateDO full = onXqDs(() -> categoryFieldTemplateMapper.selectById(m.getId()));
+            if (full == null || StrUtil.isBlank(full.getTemplateJson())) {
+                continue;
+            }
+            XqCategoryFieldTemplateRespVO parsed = toCategoryFieldTemplateVo(full, "");
+            full.setTemplateJson(null);
+            if (parsed == null || parsed.getFields() == null) {
+                continue;
+            }
+            for (XqCategoryFieldTemplateRespVO.Field field : parsed.getFields()) {
+                if (field == null || StrUtil.isBlank(field.getCode())) {
+                    continue;
+                }
+                String level = StrUtil.blankToDefault(field.getRequirementLevel(), "").toUpperCase();
+                if ("DISABLED".equals(level)) {
+                    continue;
+                }
+                mergePoolRow(byKey, full.getPlatformId(), field.getCode(), field.getLabel(),
+                        field.getType(), field.getRequired(), field.getRequirementLevel(),
+                        field.getValuesList(),
+                        JSONUtil.toJsonStr(field), "template");
+            }
+        }
+        persistPoolRows(templatePlatformIds, byKey.values(), true);
+        return byKey.size();
+    }
+
+    private void persistPoolRows(Collection<String> platformIds,
+                                 Collection<XqListingFieldPoolDO> rows,
+                                 boolean replacePlatform) {
+        LocalDateTime now = LocalDateTime.now();
+        onXqDs(() -> {
+            if (replacePlatform) {
+                listingFieldPoolMapper.deleteByPlatformIds(platformIds);
+            }
+            for (XqListingFieldPoolDO row : rows) {
+                if (row == null) {
+                    continue;
+                }
+                if (row.getCreateDate() == null) {
+                    row.setCreateDate(now);
+                }
+                row.setUpdateDate(now);
+                listingFieldPoolMapper.insert(row);
+            }
+            return null;
+        });
+    }
+
+    private void mergePoolRow(Map<String, XqListingFieldPoolDO> byKey,
+                              String platformId, String rawCode, String label, String fieldType,
+                              Boolean required, String requirementLevel, String valuesListCode,
+                              String fieldJson, String source) {
+        String pid = StrUtil.blankToDefault(platformId, "").trim();
+        String code = normalizePoolFieldCode(rawCode);
+        if (pid.isEmpty() || code.isEmpty()) {
+            return;
+        }
+        String key = poolKey(pid, code);
+        XqListingFieldPoolDO exist = byKey.get(key);
+        int addCount = 1;
+        if (StrUtil.isNotBlank(fieldJson)) {
+            try {
+                JSONObject json = JSONUtil.parseObj(fieldJson);
+                if (json.getJSONArray("categoryIds") != null) {
+                    addCount = Math.max(1, json.getJSONArray("categoryIds").size());
+                }
+            } catch (Exception ignored) {
+                // ignore
+            }
+        }
+        if (exist == null) {
+            XqListingFieldPoolDO row = new XqListingFieldPoolDO();
+            row.setId(poolRowId(pid, code));
+            row.setPlatformId(pid);
+            row.setFieldCode(code);
+            row.setLabel(StrUtil.blankToDefault(label, code));
+            row.setFieldType(StrUtil.blankToDefault(fieldType, ""));
+            row.setRequired(Boolean.TRUE.equals(required));
+            row.setRequirementLevel(StrUtil.blankToDefault(requirementLevel,
+                    Boolean.TRUE.equals(required) ? "REQUIRED" : "OPTIONAL"));
+            row.setValuesListCode(StrUtil.blankToDefault(valuesListCode, ""));
+            row.setSource(StrUtil.blankToDefault(source, "template"));
+            row.setSourceCount(addCount);
+            row.setFieldJson(fieldJson);
+            byKey.put(key, row);
+            return;
+        }
+        exist.setSourceCount((exist.getSourceCount() == null ? 1 : exist.getSourceCount()) + addCount);
+        if (Boolean.TRUE.equals(required) && !Boolean.TRUE.equals(exist.getRequired())) {
+            exist.setRequired(true);
+            exist.setRequirementLevel(StrUtil.blankToDefault(requirementLevel, "REQUIRED"));
+        }
+        if (StrUtil.isBlank(exist.getLabel()) && StrUtil.isNotBlank(label)) {
+            exist.setLabel(label);
+        }
+        if ("template".equals(exist.getSource()) && StrUtil.isNotBlank(source) && !"template".equals(source)) {
+            exist.setSource(source);
+        }
+    }
+
+    private static String poolKey(String platformId, String fieldCode) {
+        return platformId + "::" + fieldCode;
+    }
+
+    private static String poolRowId(String platformId, String fieldCode) {
+        return cn.hutool.crypto.digest.DigestUtil.md5Hex(platformId + "::" + fieldCode);
+    }
+
     private Set<String> resolveTemplatePlatformIds(String platformId) {
         Set<String> ids = new java.util.LinkedHashSet<>();
         String source = storeScopeService.resolveSourcePlatformId(platformId);
@@ -703,14 +873,27 @@ public class XqListingCatalogService {
     }
 
     /**
-     * 亚马逊多实例字段（bullet_point_2、material_5）合并为基础编码，避免同名重复出现。
+     * 字段池展示编码归一：
+     * 1) 亚马逊多实例 bullet_point_2 → bullet_point
+     * 2) Mirakl/Best Buy 类目前缀 Fireplaces.color → color（大写类目.小写属性）
      */
     private static String normalizePoolFieldCode(String raw) {
         String code = StrUtil.blankToDefault(raw, "").trim();
         if (code.isEmpty()) {
             return "";
         }
-        return code.replaceAll("_(?:[1-9]\\d*)$", "");
+        code = code.replaceAll("_(?:[1-9]\\d*)$", "");
+        int dot = code.indexOf('.');
+        if (dot > 0 && dot < code.length() - 1) {
+            String head = code.substring(0, dot);
+            String rest = code.substring(dot + 1);
+            if (head.matches("^[A-Z][A-Za-z0-9_]*$")
+                    && !rest.isEmpty()
+                    && Character.isLowerCase(rest.charAt(0))) {
+                return rest;
+            }
+        }
+        return code;
     }
 
     private static void putPoolField(

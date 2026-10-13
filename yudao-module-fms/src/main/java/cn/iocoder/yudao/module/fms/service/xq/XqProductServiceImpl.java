@@ -182,7 +182,7 @@ public class XqProductServiceImpl implements XqProductService {
         return vo;
     }
 
-    /** 家族索引行补齐自提 / 一件代发价（来自 snapshot.price_json） */
+    /** 家族索引行补齐自提运费 / 代发运费（来自 snapshot.price_json） */
     private void enrichPriceRoles(List<XqGigaProductRow> rows) {
         if (CollUtil.isEmpty(rows)) {
             return;
@@ -190,7 +190,7 @@ public class XqProductServiceImpl implements XqProductService {
         Set<String> skus = new LinkedHashSet<>();
         for (XqGigaProductRow row : rows) {
             if (row != null && StrUtil.isNotBlank(row.getSku())
-                    && (row.getPickupPrice() == null || row.getDropshipPrice() == null)) {
+                    && (row.getPickupShippingFee() == null || row.getDropshipShippingFee() == null)) {
                 skus.add(row.getSku());
             }
         }
@@ -211,11 +211,8 @@ public class XqProductServiceImpl implements XqProductService {
             if (price == null) {
                 continue;
             }
-            if (row.getPickupPrice() == null) {
-                row.setPickupPrice(price.getPickupPrice());
-            }
-            if (row.getDropshipPrice() == null) {
-                row.setDropshipPrice(price.getDropshipPrice());
+            if (row.getPickupShippingFee() == null) {
+                row.setPickupShippingFee(price.getPickupShippingFee());
             }
             if (row.getDropshipShippingFee() == null) {
                 row.setDropshipShippingFee(price.getDropshipShippingFee());
@@ -367,8 +364,7 @@ public class XqProductServiceImpl implements XqProductService {
         v.setQtyAvailable(row.getQtyAvailable());
         v.setPrice(row.getPrice());
         v.setDiscountedPrice(row.getDiscountedPrice());
-        v.setPickupPrice(row.getPickupPrice());
-        v.setDropshipPrice(row.getDropshipPrice());
+        v.setPickupShippingFee(row.getPickupShippingFee());
         v.setDropshipShippingFee(row.getDropshipShippingFee());
         String color = XqGigaAssociateSupport.clean(row.getMainColor());
         v.setMainColor(color);

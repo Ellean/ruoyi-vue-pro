@@ -55,6 +55,12 @@
             <artifactId>yudao-spring-boot-starter-mybatis</artifactId>
         </dependency>
 
+        <!-- Job：大健选品列表定时同步 -->
+        <dependency>
+            <groupId>cn.iocoder.boot</groupId>
+            <artifactId>yudao-spring-boot-starter-job</artifactId>
+        </dependency>
+
         <!-- 现金流量表公式计算 -->
         <dependency>
             <groupId>com.googlecode.aviator</groupId>

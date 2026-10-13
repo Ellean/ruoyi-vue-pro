@@ -155,13 +155,24 @@ public class XqListingCatalogController {
     }
 
     @GetMapping("/field-pool")
-    @Operation(summary = "平台字段池（杂糅全部原分类模板字段），可叠加店铺+国家分区")
+    @Operation(summary = "平台字段池（只读去重表，叠加店铺+国家分区）；禁止扫全部分类模板")
     @PreAuthorize("@ss.hasAnyPermissions('xq:template-config:query', 'xq:work-order:query', 'xq:work-order:update')")
     public CommonResult<XqFieldPoolRespVO> getFieldPool(
             @RequestParam("platformId") String platformId,
             @RequestParam(value = "shopId", required = false) String shopId,
             @RequestParam(value = "country", required = false) String country) {
         return success(listingCatalogService.getFieldPool(platformId, shopId, country));
+    }
+
+    @PostMapping("/field-pool/rebuild")
+    @Operation(summary = "按平台重建字段池（优先 common/special；可选扫类目模板）")
+    @PreAuthorize("@ss.hasPermission('xq:template-config:update')")
+    public CommonResult<java.util.Map<String, Object>> rebuildFieldPool(
+            @RequestParam("platformId") String platformId,
+            @RequestParam(value = "includeTemplates", required = false, defaultValue = "false")
+            Boolean includeTemplates) {
+        return success(listingCatalogService.rebuildFieldPool(
+                platformId, Boolean.TRUE.equals(includeTemplates)));
     }
 
     @GetMapping("/shop-field-config")

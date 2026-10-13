@@ -27,8 +27,11 @@ public class XqWorkOrderPageReqVO extends PageParam {
     @Schema(description = "状态")
     private Integer status;
 
-    @Schema(description = "Giga 类目 id")
+    @Schema(description = "Giga 类目 id（自身；服务端会扩子树）")
     private Long gigaCategoryId;
+
+    @Schema(description = "Giga 类目 id 列表（含子树，后端写入）", hidden = true)
+    private java.util.Collection<Long> gigaCategoryIds;
 
     @Schema(description = "文案领取人")
     private Long copyUserId;
@@ -74,5 +77,12 @@ public class XqWorkOrderPageReqVO extends PageParam {
 
     @Schema(description = "绑定账号：下发人/文案领取人/美工，后端写入，忽略前端伪造")
     private Long boundUserId;
+
+    /**
+     * 已选产品池：已领取、有文案、已跑完图，但未选平台或分类。
+     * 为 true 时不按认领人收窄，供运营补绑平台/分类。
+     */
+    @Schema(description = "已选产品池（无平台/分类但已有图文）")
+    private Boolean selectedPool;
 
 }

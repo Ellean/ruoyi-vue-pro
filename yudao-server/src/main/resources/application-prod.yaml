@@ -1,0 +1,191 @@
+server:
+  port: ${SERVER_PORT:48080}
+
+--- #################### 数据库相关配置 ####################
+spring:
+  autoconfigure:
+    # noinspection SpringBootApplicationYaml
+    exclude:
+      - org.springframework.ai.vectorstore.qdrant.autoconfigure.QdrantVectorStoreAutoConfiguration
+      - org.springframework.ai.vectorstore.redis.autoconfigure.RedisVectorStoreAutoConfiguration
+      - org.springframework.ai.vectorstore.milvus.autoconfigure.MilvusVectorStoreAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeChatAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAgentAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeImageAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeVideoAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAudioSpeechAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAudioTranscriptionAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeRerankAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeEmbeddingAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeMultimodalEmbeddingAutoConfiguration
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAsyncToolCallingManagerAutoConfiguration
+  datasource:
+    druid:
+      web-stat-filter:
+        enabled: true
+      stat-view-servlet:
+        enabled: false
+        url-pattern: /druid/*
+      filter:
+        stat:
+          enabled: true
+          log-slow-sql: true
+          slow-sql-millis: 200
+          merge-sql: true
+        wall:
+          config:
+            multi-statement-allow: true
+    dynamic:
+      druid:
+        initial-size: 5
+        min-idle: 5
+        max-active: 50
+        max-wait: 60000
+        time-between-eviction-runs-millis: 60000
+        min-evictable-idle-time-millis: 600000
+        max-evictable-idle-time-millis: 1800000
+        validation-query: SELECT 1 FROM DUAL
+        test-while-idle: true
+        test-on-borrow: false
+        test-on-return: false
+        pool-prepared-statements: true
+        max-pool-prepared-statement-per-connection-size: 20
+      primary: master
+      # Giga/上架表已在 master，禁止再配 xq 双库
+      strict: true
+      datasource:
+        master:
+          url: ${MASTER_DATASOURCE_URL:jdbc:mysql://182.92.3.138:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true}
+          username: ${MASTER_DATASOURCE_USERNAME:root}
+          password: ${MASTER_DATASOURCE_PASSWORD:qwer123456..}
+        slave:
+          lazy: true
+          url: ${SLAVE_DATASOURCE_URL:${MASTER_DATASOURCE_URL:jdbc:mysql://182.92.3.138:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true}}
+          username: ${SLAVE_DATASOURCE_USERNAME:${MASTER_DATASOURCE_USERNAME:root}}
+          password: ${SLAVE_DATASOURCE_PASSWORD:${MASTER_DATASOURCE_PASSWORD:qwer123456..}}
+
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      database: ${REDIS_DATABASE:0}
+      # password: ${REDIS_PASSWORD:}
+
+--- #################### 定时任务 ####################
+spring:
+  quartz:
+    auto-startup: true
+    scheduler-name: schedulerName
+    job-store-type: jdbc
+    wait-for-jobs-to-complete-on-shutdown: true
+    properties:
+      org:
+        quartz:
+          scheduler:
+            instanceName: schedulerName
+            instanceId: AUTO
+          jobStore:
+            class: org.springframework.scheduling.quartz.LocalDataSourceJobStore
+            isClustered: true
+            clusterCheckinInterval: 15000
+            misfireThreshold: 60000
+          threadPool:
+            threadCount: 25
+            threadPriority: 5
+            class: org.quartz.simpl.SimpleThreadPool
+    jdbc:
+      initialize-schema: NEVER
+
+--- #################### 消息队列（按需；未部署可忽略连接失败） ####################
+rocketmq:
+  name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+
+spring:
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:127.0.0.1:9092}
+
+--- #################### 监控 ####################
+management:
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        include: health,info
+
+spring:
+  boot:
+    admin:
+      client:
+        url: http://127.0.0.1:${server.port}/${spring.boot.admin.context-path}
+        instance:
+          service-host-type: IP
+        username: admin
+        password: admin
+      context-path: /admin
+      frame-ancestors: "'self'"
+
+logging:
+  file:
+    name: ${LOG_PATH:/data/logs/yudao-server}/yudao-server.log
+  level:
+    root: INFO
+    cn.iocoder.yudao: INFO
+    org.springframework.context.support.PostProcessorRegistrationDelegate: ERROR
+
+debug: false
+
+--- #################### 芋道业务 ####################
+yudao:
+  captcha:
+    enable: false # 关闭登录图形验证码，账号密码直接登录
+  security:
+    mock-enable: false
+  access-log:
+    enable: true
+  demo: false
+
+justauth:
+  enabled: true
+  cache:
+    type: REDIS
+    prefix: 'social_auth_state:'
+    timeout: 24h
+
+--- #################### 微信公众号 / 小程序（WxJava 启动必填，可后续换成正式号） ####################
+wx:
+  mp:
+    app-id: ${WX_MP_APP_ID:wxf56b1542b9e85f8a}
+    secret: ${WX_MP_SECRET:496379dcef1ba869e9234de8d598cfd3}
+    config-storage:
+      type: RedisTemplate
+      key-prefix: wx
+      http-client-type: HttpComponents
+  miniapp:
+    appid: ${WX_MINIAPP_APPID:wxc4598c446f8a9cb3}
+    secret: ${WX_MINIAPP_SECRET:4a1a04e07f6a4a0751b39c3064a92c8b}
+    config-storage:
+      type: RedisTemplate
+      key-prefix: wa
+      http-client-type: HttpComponents
+
+--- #################### XQ RPA / AI ####################
+xq:
+  # 上架分表 Excel 根目录：线上请改成服务器实际路径，或挂载同构目录
+  listing-template-root: ${XQ_LISTING_TEMPLATE_ROOT:/data/xq-erp/uploads/gigab2b/listing-templates}
+  rpa:
+    # 影刀本机回调/AI：走 Nginx 8088（已放行），勿用 127.0.0.1 或未放行的 48080
+    callback-base-url: ${XQ_RPA_CALLBACK_BASE_URL:http://182.92.3.138:8088/admin-api}
+    callback-token: ${XQ_RPA_CALLBACK_TOKEN:xq-rpa-callback}
+    # 旧 ERP（xq-erp Node）根地址，Aixoras/OSS 仍可能走此地址
+    erp-base-url: ${XQ_ERP_BASE_URL:http://182.92.3.138}
+  ai:
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+    api-key: ${OPENAI_API_KEY:}
+    model: ${OPENAI_MODEL:gpt-4o-mini}
+    timeout-ms: 180000
+    mock-when-empty: false

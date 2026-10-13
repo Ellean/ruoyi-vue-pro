@@ -5,6 +5,7 @@ import cn.iocoder.yudao.framework.common.pojo.PageResult;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.product.XqProductPageReqVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.product.XqProductRespVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.product.XqProductSaveReqVO;
+import cn.iocoder.yudao.module.fms.service.xq.XqGigaProductEnsureService;
 import cn.iocoder.yudao.module.fms.service.xq.XqProductService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -25,6 +26,8 @@ public class XqProductController {
 
     @Resource
     private XqProductService productService;
+    @Resource
+    private XqGigaProductEnsureService gigaProductEnsureService;
 
     @PostMapping("/create")
     @Operation(summary = "创建品库产品（本地演示表）")
@@ -55,6 +58,14 @@ public class XqProductController {
     @PreAuthorize("@ss.hasPermission('xq:product:query')")
     public CommonResult<XqProductRespVO> getProduct(@RequestParam("id") String id) {
         return success(productService.getProduct(id));
+    }
+
+    @PostMapping("/ensure-detail")
+    @Operation(summary = "按需拉取大健云仓详情与自提/代发价（全部启用凭证）")
+    @Parameter(name = "id", description = "品库列表 id", required = true)
+    @PreAuthorize("@ss.hasPermission('xq:product:query')")
+    public CommonResult<XqProductRespVO> ensureProductDetail(@RequestParam("id") String id) {
+        return success(gigaProductEnsureService.ensureDetail(id));
     }
 
     @GetMapping("/page")

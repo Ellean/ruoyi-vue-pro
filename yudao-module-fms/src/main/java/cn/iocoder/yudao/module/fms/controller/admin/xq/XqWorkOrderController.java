@@ -63,10 +63,12 @@ public class XqWorkOrderController {
 
     @GetMapping("/page")
     @Operation(summary = "工作台任务分页")
-    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:query', 'xq:work-order:my-copy', 'xq:work-order:my-image', 'xq:work-order:list')")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:query', 'xq:work-order:my-copy', 'xq:work-order:my-image', 'xq:work-order:list', 'xq:work-order:selected-pool')")
     public CommonResult<PageResult<XqWorkOrderRespVO>> getWorkOrderPage(@Valid XqWorkOrderPageReqVO pageReqVO) {
         Long uid = getLoginUserId();
-        pageReqVO.setBoundUserId(uid);
+        boolean selectedPool = Boolean.TRUE.equals(pageReqVO.getSelectedPool());
+        // 已选产品池：运营看全量待补绑数据，不按认领人收窄
+        pageReqVO.setBoundUserId(selectedPool ? null : uid);
         if (pageReqVO.getMineUserId() != null) {
             pageReqVO.setMineUserId(uid);
         }
@@ -210,6 +212,14 @@ public class XqWorkOrderController {
     @PreAuthorize("@ss.hasPermission('xq:work-order:assign-image')")
     public CommonResult<Integer> batchAssignImage(@Valid @RequestBody XqWorkOrderAssignImageReqVO reqVO) {
         return success(workOrderService.batchAssignImage(reqVO, getLoginUserId()));
+    }
+
+    @PostMapping("/bind-listing")
+    @Operation(summary = "已选产品池：补绑上架平台与分类")
+    @PreAuthorize("@ss.hasAnyPermissions('xq:work-order:selected-pool', 'xq:work-order:update', 'xq:product:dispatch')")
+    public CommonResult<Integer> bindListing(
+            @Valid @RequestBody cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderBindListingReqVO reqVO) {
+        return success(workOrderService.bindListing(reqVO, getLoginUserId()));
     }
 
     @PostMapping("/image-status")
