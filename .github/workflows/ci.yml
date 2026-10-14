@@ -62,6 +62,26 @@ jobs:
           java-version: '25'
           cache: maven
 
+      # 硬编码凭据闸门：application.yaml 是所有 profile 的基线（prod 也加载），且四份 yaml 都会
+      # 被打进 jar，而镜像是公开可匿名拉取的 —— 写进 yaml 的真值等于发布到公网。
+      # 规则与例外清单见 docs/本地开发密钥存放规范.md §8。
+      - name: No hardcoded credentials
+        if: ${{ matrix.name == 'Build' }}
+        run: |
+          set -euo pipefail
+          FILES="yudao-server/src/main/resources/application.yaml
+          yudao-server/src/main/resources/application-prod.yaml"
+          # shellcheck disable=SC2086
+          HITS=$(grep -nE '(password|secret|api-key|access-key[a-z-]*|token):' $FILES \
+            | grep -v '\${' \
+            | grep -v 'cb022f1e-48f1-4c4a-a723-9001ac9676b8' || true)
+          if [ -n "$HITS" ]; then
+            echo "::error::发现非占位符的凭据，改成 \${ENV_VAR:} 形式（规范见 docs/本地开发密钥存放规范.md）"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "OK: no hardcoded credentials in $FILES"
+
       # -s .mvn/settings-ci.xml：把根 pom 为国内开发声明的 huaweicloud / aliyunmaven 镜像
       # 改指 Maven Central。runner 在美国，此前 90% 的依赖下载跨太平洋，冷缓存时 go-offline
       # 单项就要 20 分钟。详见该文件头部注释。
