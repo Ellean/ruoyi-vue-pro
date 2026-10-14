@@ -53,6 +53,8 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
     @Resource
     private XqWorkOrderMapper workOrderMapper;
     @Resource
+    private XqAiUsageLogService aiUsageLogService;
+    @Resource
     private XqListingCatalogService listingCatalogService;
     @Resource
     private XqRpaUserConfigMapper rpaUserConfigMapper;
@@ -311,12 +313,13 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
             try {
                 jobs.add(buildJobInput(order, userId));
             } catch (Exception ex) {
+                // 已有提示词仍回「待执行」，勿落到 todo（未完成=缺提示词）
                 workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
                         .eq(XqWorkOrderDO::getId, order.getId())
                         .set(XqWorkOrderDO::getRpaImageStatus, RPA_STATUS_FAIL)
                         .set(XqWorkOrderDO::getRpaImageError,
                                 StrUtil.maxLength(StrUtil.blankToDefault(ex.getMessage(), "组包失败"), 500))
-                        .set(XqWorkOrderDO::getImageStatus, "todo"));
+                        .set(XqWorkOrderDO::getImageStatus, "pending"));
             }
         }
         return jobs;
@@ -352,6 +355,7 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
 
         String status = StrUtil.blankToDefault(reqVO.getStatus(), "").trim().toLowerCase();
         if ("fail".equals(status) || "failed".equals(status) || "error".equals(status)) {
+            // 生图失败回到待执行，可重跑；todo 仅表示尚未写提示词
             workOrderMapper.update(null, new LambdaUpdateWrapper<XqWorkOrderDO>()
                     .eq(XqWorkOrderDO::getId, order.getId())
                     .set(XqWorkOrderDO::getRpaImageStatus, RPA_STATUS_FAIL)
@@ -359,7 +363,7 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
                             StrUtil.maxLength(StrUtil.blankToDefault(reqVO.getErrorMessage(), "生图 RPA 失败"), 500))
                     .set(XqWorkOrderDO::getRpaImageWorkUuid,
                             StrUtil.blankToDefault(reqVO.getWorkUuid(), order.getRpaImageWorkUuid()))
-                    .set(XqWorkOrderDO::getImageStatus, "todo"));
+                    .set(XqWorkOrderDO::getImageStatus, "pending"));
             return;
         }
 
@@ -393,8 +397,24 @@ public class XqImagePipelineServiceImpl implements XqImagePipelineService {
         if (updated <= 0) {
             throw exception(XQ_RPA_TRIGGER_FAIL, "回调落库失败：工单未更新 id=" + order.getId());
         }
-        log.info("[rpa-image-callback] ok workOrderId={} sku={} prompts={}",
-                order.getId(), order.getExternalSku(), merged.size());
+        int genCount = 0;
+        if (CollUtil.isNotEmpty(incoming)) {
+            for (Map<String, Object> src : incoming) {
+                if (src == null) {
+                    continue;
+                }
+                String result = firstUrl(src.get("resultUrl"), src.get("generatedImageUrl"), src.get("url"));
+                if (StrUtil.isNotBlank(result)) {
+                    genCount++;
+                }
+            }
+        }
+        if (genCount > 0) {
+            aiUsageLogService.record(order.getId(), XqAiUsageLogService.CAT_IMAGE_GEN,
+                    null, 0, 0, genCount, null, "rpa-image-callback");
+        }
+        log.info("[rpa-image-callback] ok workOrderId={} sku={} prompts={} genCount={}",
+                order.getId(), order.getExternalSku(), merged.size(), genCount);
     }
 
     private static List<Map<String, Object>> mergeImagePrompts(

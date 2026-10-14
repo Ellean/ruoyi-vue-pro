@@ -315,3 +315,38 @@ xq:
     model: gpt-4o-mini
     timeout-ms: 180000
     mock-when-empty: false
+  # 阿里云机器翻译专业版（电商 title/description）；开通后填 AK，用于文案中文对照
+  aliyun:
+    mt:
+      enabled: true
+      endpoint: mt.cn-hangzhou.aliyuncs.com
+      access-key-id: ${XQ_ALIYUN_MT_AK:}
+      access-key-secret: ${XQ_ALIYUN_MT_SK:}
+      default-source-language: auto
+      default-target-language: zh
+      connect-timeout-ms: 8000
+      read-timeout-ms: 20000
+  # ToAPIs 用量：账户设置页「系统访问令牌」+ User ID（非 sk-）
+  # 文档 https://docs.toapis.cn/docs/cn/api-reference/account/token-usage
+  toapis:
+    usage:
+      enabled: true
+      base-url: https://toapis.cn
+      access-token: ${XQ_TOAPIS_ACCESS_TOKEN:}
+      user-id: ${XQ_TOAPIS_USER_ID:}
+      copy-model-keywords:
+        - terra
+        - gpt-5
+        - gpt-4
+        - claude
+        - chat
+      image-gen-model-keywords:
+        - gpt-image
+        - dall-e
+        - flux
+        - image
+      image-revise-model-keywords:
+        - image-edit
+        - image_edit
+        - revise
+

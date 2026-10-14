@@ -1,5 +1,6 @@
 package cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder;
 
+import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.aiusage.XqWorkOrderAiUsageVO;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -73,5 +74,8 @@ public class XqWorkOrderRespVO {
     private java.math.BigDecimal heightCm;
     /** 变体任务（仅主体返回） */
     private List<XqWorkOrderRespVO> variants = new ArrayList<>();
+
+    /** 本单 AI 消耗汇总（文案/生图/改图） */
+    private XqWorkOrderAiUsageVO aiUsage;
 
 }

@@ -602,7 +602,13 @@ public class XqSpecialConfigService {
         }
         Map<Long, AdminUserRespDTO> users = adminUserApi.getUserMap(ids);
         Map<Long, String> names = new HashMap<>();
-        users.forEach((id, u) -> names.put(id, StrUtil.blankToDefault(u.getNickname(), String.valueOf(id))));
+        users.forEach((id, u) -> {
+            String nick = StrUtil.blankToDefault(u.getNickname(), "");
+            String username = StrUtil.blankToDefault(u.getUsername(), "");
+            String label = StrUtil.isNotBlank(nick) ? nick
+                    : (StrUtil.isNotBlank(username) ? username : String.valueOf(id));
+            names.put(id, label);
+        });
         return names;
     }
 

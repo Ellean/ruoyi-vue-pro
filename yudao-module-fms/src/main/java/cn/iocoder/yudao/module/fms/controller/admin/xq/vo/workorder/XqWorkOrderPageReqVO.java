@@ -82,7 +82,7 @@ public class XqWorkOrderPageReqVO extends PageParam {
      * 已选产品池：已领取、有文案、已跑完图，但未选平台或分类。
      * 为 true 时不按认领人收窄，供运营补绑平台/分类。
      */
-    @Schema(description = "已选产品池（无平台/分类但已有图文）")
+    @Schema(description = "已选产品池（无平台但已领取且有图片提示词）")
     private Boolean selectedPool;
 
 }

@@ -19,6 +19,12 @@ public class XqRpaAiGenerateImageReqVO {
     @Schema(description = "SKU")
     private String sku;
 
+    @Schema(description = "作业单 ID（计费用）")
+    private Long workOrderId;
+
+    @Schema(description = "消耗分类：image_gen / image_revise，默认 image_gen")
+    private String usageCategory;
+
     /**
      * 参考图：{ contentBase64|base64|data, mimeType|mime, fileName|name, url }
      */

@@ -189,3 +189,34 @@ xq:
     model: ${OPENAI_MODEL:gpt-4o-mini}
     timeout-ms: 180000
     mock-when-empty: false
+  aliyun:
+    mt:
+      enabled: true
+      endpoint: ${XQ_ALIYUN_MT_ENDPOINT:mt.cn-hangzhou.aliyuncs.com}
+      access-key-id: ${XQ_ALIYUN_MT_AK:}
+      access-key-secret: ${XQ_ALIYUN_MT_SK:}
+      default-source-language: auto
+      default-target-language: zh
+      connect-timeout-ms: 8000
+      read-timeout-ms: 20000
+  toapis:
+    usage:
+      enabled: true
+      base-url: ${XQ_TOAPIS_BASE_URL:https://toapis.cn}
+      access-token: ${XQ_TOAPIS_ACCESS_TOKEN:}
+      user-id: ${XQ_TOAPIS_USER_ID:}
+      copy-model-keywords:
+        - terra
+        - gpt-5
+        - gpt-4
+        - claude
+        - chat
+      image-gen-model-keywords:
+        - gpt-image
+        - dall-e
+        - flux
+        - image
+      image-revise-model-keywords:
+        - image-edit
+        - image_edit
+        - revise

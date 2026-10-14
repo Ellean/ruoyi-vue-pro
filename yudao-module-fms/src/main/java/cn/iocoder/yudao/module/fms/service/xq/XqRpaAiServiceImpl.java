@@ -79,10 +79,58 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
     private AiApiKeyService aiApiKeyService;
     @Resource
     private FileService fileService;
+    @Resource
+    private XqAiUsageLogService aiUsageLogService;
+
+    /** 当前线程 AI 调用累计（文案多轮 chat 合并记一条） */
+    private static final ThreadLocal<UsageAcc> USAGE_ACC = new ThreadLocal<>();
+
+    private static final class UsageAcc {
+        private Long workOrderId;
+        private String category;
+        private String model;
+        private int promptTokens;
+        private int completionTokens;
+        private int calls;
+    }
+
+    private void beginUsage(Long workOrderId, String category) {
+        if (workOrderId == null) {
+            return;
+        }
+        UsageAcc acc = new UsageAcc();
+        acc.workOrderId = workOrderId;
+        acc.category = category;
+        USAGE_ACC.set(acc);
+    }
+
+    private void flushUsage(String remark) {
+        UsageAcc acc = USAGE_ACC.get();
+        USAGE_ACC.remove();
+        if (acc == null || acc.workOrderId == null) {
+            return;
+        }
+        // mock / 未真正调模型时不记账
+        if (acc.calls <= 0 && acc.promptTokens <= 0 && acc.completionTokens <= 0) {
+            return;
+        }
+        int calls = Math.max(1, acc.calls);
+        aiUsageLogService.record(acc.workOrderId, acc.category, acc.model,
+                acc.promptTokens, acc.completionTokens, calls, null, remark);
+    }
 
     @Override
     public Map<String, Object> generateCopy(XqRpaAiGenerateCopyReqVO reqVO) {
         assertToken(reqVO == null ? null : reqVO.getCallbackToken());
+        beginUsage(reqVO == null ? null : reqVO.getWorkOrderId(), XqAiUsageLogService.CAT_COPY);
+        try {
+            return doGenerateCopy(reqVO);
+        } finally {
+            flushUsage("generate-copy");
+        }
+    }
+
+    private Map<String, Object> doGenerateCopy(XqRpaAiGenerateCopyReqVO reqVO) {
         CopyRule rule = parseCopyRule(reqVO.getCopyRule());
         String sku = StrUtil.blankToDefault(reqVO.getSku(), "");
         String title0 = StrUtil.blankToDefault(reqVO.getTitle(), sku);
@@ -620,6 +668,14 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
             }
             log.info("[rpa-ai-generate-image] ok sku={} keyId={} costMs={} url={}",
                     reqVO.getSku(), key.getId(), data.get("costMs"), StrUtil.maxLength(storedUrl, 120));
+            String usageCat = StrUtil.blankToDefault(reqVO.getUsageCategory(),
+                    XqAiUsageLogService.CAT_IMAGE_GEN);
+            if (!XqAiUsageLogService.CAT_IMAGE_REVISE.equals(usageCat)) {
+                usageCat = XqAiUsageLogService.CAT_IMAGE_GEN;
+            }
+            aiUsageLogService.record(reqVO.getWorkOrderId(), usageCat,
+                    StrUtil.blankToDefault(edit.getModel(), model),
+                    0, 0, 1, null, "generate-image");
             return data;
         } catch (RuntimeException ex) {
             log.warn("[rpa-ai-generate-image] fail sku={} err={}", reqVO.getSku(), ex.getMessage());
@@ -898,12 +954,38 @@ public class XqRpaAiServiceImpl implements XqRpaAiService {
         ChatResponse resp = chatModel.call(prompt);
         String content = resp.getResult() != null && resp.getResult().getOutput() != null
                 ? resp.getResult().getOutput().getText() : null;
+        accumulateChatUsage(modelName, resp);
         log.info("[xq.rpa.ai] model={} {}ms chars={}", modelName,
                 System.currentTimeMillis() - start, content == null ? 0 : content.length());
         if (StrUtil.isBlank(content)) {
             throw exception(XQ_RPA_AI_FAIL, "空响应");
         }
         return content;
+    }
+
+    private void accumulateChatUsage(String modelName, ChatResponse resp) {
+        UsageAcc acc = USAGE_ACC.get();
+        if (acc == null) {
+            return;
+        }
+        acc.calls++;
+        if (StrUtil.isNotBlank(modelName)) {
+            acc.model = modelName;
+        }
+        try {
+            if (resp == null || resp.getMetadata() == null || resp.getMetadata().getUsage() == null) {
+                return;
+            }
+            var usage = resp.getMetadata().getUsage();
+            if (usage.getPromptTokens() != null) {
+                acc.promptTokens += usage.getPromptTokens();
+            }
+            if (usage.getCompletionTokens() != null) {
+                acc.completionTokens += usage.getCompletionTokens();
+            }
+        } catch (Exception ignored) {
+            // 部分中转不回 usage
+        }
     }
 
     private static boolean isHttp2ProtocolError(String detail) {

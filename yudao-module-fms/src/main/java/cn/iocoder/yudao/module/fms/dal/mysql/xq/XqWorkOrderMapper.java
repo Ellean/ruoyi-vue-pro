@@ -40,11 +40,11 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
                 .eqIfPresent(XqWorkOrderDO::getCopyUserId, reqVO.getCopyUserId())
                 // 图片池用家族展开，避免只 eq 美工时漏掉未单独写 imageUserId 的变体行
                 .eqIfPresent(XqWorkOrderDO::getImageUserId, imagePoolFlat ? null : reqVO.getImageUserId())
-                .eqIfPresent(XqWorkOrderDO::getImageStatus, reqVO.getImageStatus())
                 .eqIfPresent(XqWorkOrderDO::getWorkflowPhase, reqVO.getWorkflowPhase())
                 .eqIfPresent(XqWorkOrderDO::getListingPlatformId, reqVO.getListingPlatformId())
                 .eqIfPresent(XqWorkOrderDO::getListingShopId, reqVO.getListingShopId())
                 .eqIfPresent(XqWorkOrderDO::getListingCategoryId, reqVO.getListingCategoryId());
+        applyImageStatusFilter(wrapper, reqVO.getImageStatus());
         if (reqVO.getGigaCategoryIds() != null && !reqVO.getGigaCategoryIds().isEmpty()) {
             wrapper.in(XqWorkOrderDO::getGigaCategoryId, reqVO.getGigaCategoryIds());
         } else {
@@ -72,6 +72,11 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
         }
         if (imagePoolFlat && imageArtistId != null) {
             applyImagePoolFamilyFilter(wrapper, imageArtistId);
+            // 未选平台的旧数据集中到「已选产品池」补绑，不占编辑图片列表
+            if (reqVO.getListingPlatformId() == null || reqVO.getListingPlatformId().isBlank()) {
+                wrapper.isNotNull(XqWorkOrderDO::getListingPlatformId)
+                        .ne(XqWorkOrderDO::getListingPlatformId, "");
+            }
         }
         if (Boolean.TRUE.equals(reqVO.getListingReady())) {
             // 须审核确认图文（imageStatus=done）后才可上架
@@ -103,29 +108,40 @@ public interface XqWorkOrderMapper extends BaseMapperX<XqWorkOrderDO> {
     }
 
     /**
-     * 已选产品池：进行中 + 已领取 + 有文案 + 已跑图，但未选平台或分类。
+     * 已选产品池：进行中 + 已领取 + 已写图片提示词 + 未选平台。
+     * 运营在此补绑平台/分类；同 SKU 只保留无平台一单，不做「有平台无分类」兼收。
      */
     private static void applySelectedPoolFilter(LambdaQueryWrapperX<XqWorkOrderDO> wrapper) {
         wrapper.eq(XqWorkOrderDO::getStatus, 10);
-        // 已领取（运营/文案/美工任一）
         wrapper.and(w -> w.isNotNull(XqWorkOrderDO::getAssigneeUserId)
                 .or().isNotNull(XqWorkOrderDO::getCopyUserId)
                 .or().isNotNull(XqWorkOrderDO::getImageUserId));
-        // 写过文案
-        wrapper.and(w -> w.and(c -> c.isNotNull(XqWorkOrderDO::getContentTitle)
-                        .ne(XqWorkOrderDO::getContentTitle, ""))
-                .or(c -> c.isNotNull(XqWorkOrderDO::getCopyResultJson)
-                        .ne(XqWorkOrderDO::getCopyResultJson, "")
-                        .ne(XqWorkOrderDO::getCopyResultJson, "{}")));
-        // 跑完图片（出图/审核通过，或有主图）
-        wrapper.and(w -> w.in(XqWorkOrderDO::getImageStatus, "generated", "revised", "done")
-                .or(c -> c.isNotNull(XqWorkOrderDO::getGeneratedImageUrl)
-                        .ne(XqWorkOrderDO::getGeneratedImageUrl, "")));
-        // 未选平台 或 未选分类
+        wrapper.isNotNull(XqWorkOrderDO::getImagePromptJson)
+                .ne(XqWorkOrderDO::getImagePromptJson, "")
+                .ne(XqWorkOrderDO::getImagePromptJson, "[]");
         wrapper.and(w -> w.isNull(XqWorkOrderDO::getListingPlatformId)
-                .or().eq(XqWorkOrderDO::getListingPlatformId, "")
-                .or().isNull(XqWorkOrderDO::getListingCategoryId)
-                .or().eq(XqWorkOrderDO::getListingCategoryId, ""));
+                .or().eq(XqWorkOrderDO::getListingPlatformId, ""));
+    }
+
+    /**
+     * 图片状态 Tab：pending 与列表展示一致，把 null/空 也算作「待执行」；
+     * todo（未完成）仍单独精确匹配，不与 pending 混进同一筛选项。
+     */
+    private static void applyImageStatusFilter(LambdaQueryWrapperX<XqWorkOrderDO> wrapper,
+                                               String imageStatus) {
+        if (imageStatus == null || imageStatus.isBlank()) {
+            return;
+        }
+        String s = imageStatus.trim().toLowerCase();
+        if ("pending".equals(s)) {
+            wrapper.and(w -> w.isNull(XqWorkOrderDO::getImageStatus)
+                    .or()
+                    .eq(XqWorkOrderDO::getImageStatus, "")
+                    .or()
+                    .eq(XqWorkOrderDO::getImageStatus, "pending"));
+            return;
+        }
+        wrapper.eq(XqWorkOrderDO::getImageStatus, s);
     }
 
     private static void applyFlowStatus(LambdaQueryWrapperX<XqWorkOrderDO> wrapper, String flowStatus) {

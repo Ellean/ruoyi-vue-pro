@@ -60,6 +60,8 @@ public class XqWorkOrderController {
     private XqImagePipelineService imagePipelineService;
     @Resource
     private XqImageReviseAsyncService imageReviseAsyncService;
+    @Resource
+    private XqAiUsageLogService aiUsageLogService;
 
     @GetMapping("/page")
     @Operation(summary = "工作台任务分页")
@@ -82,6 +84,7 @@ public class XqWorkOrderController {
         if (pageReqVO.getMineImageUserId() == null) {
             workOrderService.attachVariants(vo.getList());
         }
+        attachAiUsage(vo.getList());
         return success(vo);
     }
 
@@ -93,7 +96,45 @@ public class XqWorkOrderController {
         if (vo != null && vo.getParentWorkOrderId() == null) {
             workOrderService.attachVariants(java.util.List.of(vo));
         }
+        if (vo != null) {
+            attachAiUsage(java.util.List.of(vo));
+        }
         return success(vo);
+    }
+
+    private void attachAiUsage(java.util.List<XqWorkOrderRespVO> list) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        java.util.LinkedHashSet<Long> ids = new java.util.LinkedHashSet<>();
+        for (XqWorkOrderRespVO row : list) {
+            if (row == null || row.getId() == null) {
+                continue;
+            }
+            ids.add(row.getId());
+            if (row.getVariants() != null) {
+                for (XqWorkOrderRespVO v : row.getVariants()) {
+                    if (v != null && v.getId() != null) {
+                        ids.add(v.getId());
+                    }
+                }
+            }
+        }
+        java.util.Map<Long, cn.iocoder.yudao.module.fms.controller.admin.xq.vo.aiusage.XqWorkOrderAiUsageVO> map =
+                aiUsageLogService.summarizeByWorkOrderIds(ids);
+        for (XqWorkOrderRespVO row : list) {
+            if (row == null || row.getId() == null) {
+                continue;
+            }
+            row.setAiUsage(map.get(row.getId()));
+            if (row.getVariants() != null) {
+                for (XqWorkOrderRespVO v : row.getVariants()) {
+                    if (v != null && v.getId() != null) {
+                        v.setAiUsage(map.get(v.getId()));
+                    }
+                }
+            }
+        }
     }
 
     @PostMapping("/dispatch")

@@ -1053,6 +1053,8 @@ public class XqWorkOrderServiceImpl implements XqWorkOrderService {
         XqRpaAiGenerateImageReqVO aiReq = new XqRpaAiGenerateImageReqVO();
         aiReq.setPrompt(prompt.toString());
         aiReq.setSku(StrUtil.blankToDefault(order.getProductSku(), String.valueOf(order.getId())));
+        aiReq.setWorkOrderId(order.getId());
+        aiReq.setUsageCategory(XqAiUsageLogService.CAT_IMAGE_REVISE);
         aiReq.setImages(images);
         aiReq.setLockProduct(reqVO.getLockProduct() == null || Boolean.TRUE.equals(reqVO.getLockProduct()));
         aiReq.setReturnBase64(false);

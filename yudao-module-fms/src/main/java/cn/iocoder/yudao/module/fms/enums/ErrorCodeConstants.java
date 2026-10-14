@@ -239,5 +239,11 @@ public interface ErrorCodeConstants {
     ErrorCode XQ_LISTING_TEMPLATE_MISSING = new ErrorCode(1_052_200_083, "未找到上架导出模板或原始 Excel：{}");
     ErrorCode XQ_LISTING_EXPORT_FAIL = new ErrorCode(1_052_200_084, "上架导表失败：{}");
     ErrorCode XQ_LISTING_API_FAIL = new ErrorCode(1_052_200_085, "平台 API 上架失败：{}");
+    ErrorCode XQ_ALIYUN_MT_NOT_CONFIGURED = new ErrorCode(1_052_200_090,
+            "尚未配置阿里云机器翻译：请在 xq.aliyun.mt 填写 access-key-id / access-key-secret 并开通专业版");
+    ErrorCode XQ_ALIYUN_MT_FAIL = new ErrorCode(1_052_200_091, "阿里云机器翻译失败：{}");
+    ErrorCode XQ_TOAPIS_USAGE_NOT_CONFIGURED = new ErrorCode(1_052_200_092,
+            "尚未配置 ToAPIs 用量查询：请填写 xq.toapis.usage.access-token 与 user-id");
+    ErrorCode XQ_TOAPIS_USAGE_FAIL = new ErrorCode(1_052_200_093, "ToAPIs 用量查询失败：{}");
 
 }
