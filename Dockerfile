@@ -38,14 +38,20 @@ COPY yudao-module-infra/pom.xml                                   yudao-module-i
 COPY yudao-module-fms/pom.xml                                     yudao-module-fms/
 COPY yudao-module-ai/pom.xml                                      yudao-module-ai/
 
+# CI 专用 settings：把根 pom 声明的国内镜像改指 Maven Central（builder 与 runner 同在美国，
+# 走国内镜像是这一层 1196s 的主因）。必须排在 go-offline 之前才能进它的缓存键；文件本身
+# 极少变动，变动时依赖层重建一次是应有代价。放在 .mvn/ 下是因为 .dockerignore 排除了
+# .github 与 script。
+COPY .mvn/settings-ci.xml                                         .mvn/
+
 # excludeGroupIds 排除本 reactor 自己的 groupId：go-offline 无法解析尚未构建
 # 出来的模块间依赖（yudao-server → yudao-module-system 等），不排除会直接失败。
 # go-offline 也不保证拉全，缺口由下面的 package 阶段自动补下。
-RUN mvn -B dependency:go-offline -DexcludeGroupIds=cn.iocoder.boot
+RUN mvn -B -s .mvn/settings-ci.xml dependency:go-offline -DexcludeGroupIds=cn.iocoder.boot
 
 # 单测由 CI 的 Test 腿承担，此处跳过
 COPY . .
-RUN mvn -B package -DskipTests
+RUN mvn -B -s .mvn/settings-ci.xml package -DskipTests
 
 ######################################################################
 # 运行层
@@ -71,6 +77,10 @@ COPY --from=builder --chown=app:app /app/yudao-server/target/yudao-server.jar ap
 # JVM 参数与全部 Spring 配置经容器环境变量注入（compose 的 environment），
 # 换配置不需要重建镜像
 ENV JAVA_OPTS=""
+
+# application.yaml 的默认 profile 是 local（连 127.0.0.1 的 MySQL），镜像里直接跑必然失败。
+# 镜像即生产制品，默认就落到 prod；compose 的 environment 仍可覆盖此值。
+ENV SPRING_PROFILES_ACTIVE=prod
 
 # server.port 在 application-prod.yaml 里默认 48080，不是通用模板的 8080
 EXPOSE 48080
