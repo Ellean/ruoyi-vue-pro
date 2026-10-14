@@ -55,21 +55,23 @@ spring:
       strict: true
       datasource:
         master:
-          url: ${MASTER_DATASOURCE_URL:jdbc:mysql://182.92.3.138:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true}
+          url: ${MASTER_DATASOURCE_URL:jdbc:mysql://${MYSQL_HOST:host.docker.internal}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:ruoyi-vue-pro}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true}
           username: ${MASTER_DATASOURCE_USERNAME:root}
-          password: ${MASTER_DATASOURCE_PASSWORD:qwer123456..}
+          # 口令不设默认值：只能由环境注入，缺失即启动失败
+          password: ${MASTER_DATASOURCE_PASSWORD:}
         slave:
           lazy: true
-          url: ${SLAVE_DATASOURCE_URL:${MASTER_DATASOURCE_URL:jdbc:mysql://182.92.3.138:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true}}
+          url: ${SLAVE_DATASOURCE_URL:${MASTER_DATASOURCE_URL:jdbc:mysql://${MYSQL_HOST:host.docker.internal}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:ruoyi-vue-pro}?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true&rewriteBatchedStatements=true}}
           username: ${SLAVE_DATASOURCE_USERNAME:${MASTER_DATASOURCE_USERNAME:root}}
-          password: ${SLAVE_DATASOURCE_PASSWORD:${MASTER_DATASOURCE_PASSWORD:qwer123456..}}
+          password: ${SLAVE_DATASOURCE_PASSWORD:${MASTER_DATASOURCE_PASSWORD:}}
 
   data:
     redis:
-      host: ${REDIS_HOST:127.0.0.1}
+      # 容器内 127.0.0.1 指向容器自身，宿主机共享实例需走 host-gateway
+      host: ${REDIS_HOST:host.docker.internal}
       port: ${REDIS_PORT:6379}
       database: ${REDIS_DATABASE:0}
-      # password: ${REDIS_PASSWORD:}
+      password: ${REDIS_PASSWORD:}
 
 --- #################### 定时任务 ####################
 spring:
@@ -156,18 +158,18 @@ justauth:
     prefix: 'social_auth_state:'
     timeout: 24h
 
---- #################### 微信公众号 / 小程序（WxJava 启动必填，可后续换成正式号） ####################
+--- #################### 微信公众号 / 小程序（WxJava 启动必填，appid 与 secret 均须由环境注入） ####################
 wx:
   mp:
-    app-id: ${WX_MP_APP_ID:wxf56b1542b9e85f8a}
-    secret: ${WX_MP_SECRET:496379dcef1ba869e9234de8d598cfd3}
+    app-id: ${WX_MP_APP_ID:}
+    secret: ${WX_MP_SECRET:}
     config-storage:
       type: RedisTemplate
       key-prefix: wx
       http-client-type: HttpComponents
   miniapp:
-    appid: ${WX_MINIAPP_APPID:wxc4598c446f8a9cb3}
-    secret: ${WX_MINIAPP_SECRET:4a1a04e07f6a4a0751b39c3064a92c8b}
+    appid: ${WX_MINIAPP_APPID:}
+    secret: ${WX_MINIAPP_SECRET:}
     config-storage:
       type: RedisTemplate
       key-prefix: wa
@@ -179,10 +181,10 @@ xq:
   listing-template-root: ${XQ_LISTING_TEMPLATE_ROOT:/data/xq-erp/uploads/gigab2b/listing-templates}
   rpa:
     # 影刀本机回调/AI：走 Nginx 8088（已放行），勿用 127.0.0.1 或未放行的 48080
-    callback-base-url: ${XQ_RPA_CALLBACK_BASE_URL:http://182.92.3.138:8088/admin-api}
-    callback-token: ${XQ_RPA_CALLBACK_TOKEN:xq-rpa-callback}
+    callback-base-url: ${XQ_RPA_CALLBACK_BASE_URL:http://${XQ_PUBLIC_HOST:localhost}:8088/admin-api}
+    callback-token: ${XQ_RPA_CALLBACK_TOKEN:}
     # 旧 ERP（xq-erp Node）根地址，Aixoras/OSS 仍可能走此地址
-    erp-base-url: ${XQ_ERP_BASE_URL:http://182.92.3.138}
+    erp-base-url: ${XQ_ERP_BASE_URL:http://${XQ_PUBLIC_HOST:localhost}}
   ai:
     base-url: ${OPENAI_BASE_URL:https://api.openai.com}
     api-key: ${OPENAI_API_KEY:}
