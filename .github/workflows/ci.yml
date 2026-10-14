@@ -28,10 +28,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # 三腿并行，任一失败即由 ci-ok 给出显式红叉。
-    # fail-fast 暂设 false：首次打通阶段需要三腿各自独立报完，否则 Test 一红就把
-    # Docker Build 取消掉，无从判断镜像能否构建。全链路稳定后改回 true 以省算力。
+    # fail-fast 首次打通期曾设为 false，好让三腿各自独立报完（否则 Test 一红就把
+    # Docker Build 取消掉，无从判断镜像能否构建）；全链路已绿，改回 true 省算力。
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           # 仓库无 spotless/checkstyle/pmd/spotbugs，文档模板的 lint 腿无从跑起；
