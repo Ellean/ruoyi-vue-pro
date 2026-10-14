@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CI 专用 Maven settings：把根 pom <repositories> 声明的两个国内镜像改指 Maven Central。
+
+  为什么需要：根 pom 为国内本地开发声明了 huaweicloud / aliyunmaven，而 GitHub Actions
+  runner 在美国。冷缓存的 Build 腿里 2535/2818 次下载走了跨太平洋链路，Docker 腿的
+  dependency:go-offline 单项耗 1196.7s，是整条流水线最大的开销来源。已对这 2535 个路径
+  逐条 HEAD 校验 repo.maven.apache.org 全部返回 200，改指 Central 不存在缺件风险。
+
+  mirror 的 id 刻意沿用 huaweicloud 而非另起新名：Maven 会把「构件来自哪个仓库 id」写进
+  本地仓库的 _remote.repositories，resolver 只认当前解析上下文里出现过的 id。id 一变，
+  setup-java 恢复出来的 ~/.m2 缓存会被整体判为不可用而全量重下。沿用原 id 让缓存继续有效。
+
+  为什么用 -s 显式传入，而不直接改根 pom：国内镜像对本地开发是正确选择，不该被 CI 的
+  网络拓扑反向绑架。同理不用 .mvn/maven.config —— 那会让本地构建也吃这份 settings。
+
+  为什么放在 .mvn/ 下：.dockerignore 排除了 .github 与 script，Dockerfile 里的 mvn
+  取不到那两个目录下的文件；.mvn/ 未被排除。
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <mirrors>
+    <mirror>
+      <id>huaweicloud</id>
+      <name>Maven Central (CI)</name>
+      <url>https://repo.maven.apache.org/maven2</url>
+      <!-- 只镜像根 pom 声明的两个国内仓库；central、ossrh 等仍按原样解析 -->
+      <mirrorOf>huaweicloud,aliyunmaven</mirrorOf>
+    </mirror>
+  </mirrors>
+
+</settings>

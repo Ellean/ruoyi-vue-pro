@@ -45,10 +45,12 @@ jobs:
       contents: read
       packages: write
     steps:
+      # 浅克隆：仓库 pack 已 208MB，Build/Test 腿此前用 fetch-depth 0 拉全量历史纯属浪费。
+      # 全仓无 git-commit-id / buildnumber 这类需要历史信息的插件，三腿统一浅克隆是安全的。
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          fetch-depth: ${{ matrix.name == 'Docker Build' && 1 || 0 }}
+          fetch-depth: 1
 
       # JDK 锁 25：根 pom 是 <java.version>25</java.version> + Spring Boot 4.1.0，
       # 旧 maven.yml 的 8/11/17 矩阵在此项目上必然编译失败
@@ -60,14 +62,17 @@ jobs:
           java-version: '25'
           cache: maven
 
+      # -s .mvn/settings-ci.xml：把根 pom 为国内开发声明的 huaweicloud / aliyunmaven 镜像
+      # 改指 Maven Central。runner 在美国，此前 90% 的依赖下载跨太平洋，冷缓存时 go-offline
+      # 单项就要 20 分钟。详见该文件头部注释。
       - name: Build
         if: ${{ matrix.name == 'Build' }}
-        run: ./mvnw -B -DskipTests package
+        run: ./mvnw -B -s .mvn/settings-ci.xml -DskipTests package
 
       # 测试栈是 H2 + jedis-mock + podam，纯内存，不需要外部 MySQL/Redis 服务
       - name: Test
         if: ${{ matrix.name == 'Test' }}
-        run: ./mvnw -B test
+        run: ./mvnw -B -s .mvn/settings-ci.xml test
 
       - name: Compose image tags
         if: ${{ matrix.name == 'Docker Build' }}
