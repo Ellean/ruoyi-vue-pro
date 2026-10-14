@@ -39,8 +39,11 @@ public class FmsAuxiliaryCombinationServiceImplTest extends BaseDbUnitTest {
 
         // 断言
         assertNull(auxiliaryCombinationMapper.selectById(deletedCombination.getId()));
+        // createTime/updateTime 由 MyBatis Plus 自动填充为纳秒精度，H2 的 TIMESTAMP(6) 回读会
+        // 四舍五入到微秒，逐位比对必然随机失败；按上游约定（见 OAuth2TokenServiceImplTest）忽略
         assertPojoEquals(retainedCombination,
-                auxiliaryCombinationMapper.selectById(retainedCombination.getId()), "deleted");
+                auxiliaryCombinationMapper.selectById(retainedCombination.getId()),
+                "createTime", "updateTime", "deleted");
     }
 
 }
