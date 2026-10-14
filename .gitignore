@@ -53,3 +53,13 @@ application-my.yaml
 /yudao-ui-app/unpackage/
 .DS_Store
 **/.DS_Store
+
+######################################################################
+# Scratch：本地调试残留，禁止提交
+tmp_*
+_inspect_*
+scratch/
+
+######################################################################
+# Node（sql/mysql 下的一次性导入脚本）
+node_modules/

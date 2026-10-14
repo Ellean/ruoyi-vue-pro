@@ -1,0 +1,292 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - test
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CI: true
+  TZ: Asia/Shanghai
+  # GHCR 镜像名强制全小写，与 owner 的大小写无关
+  IMAGE: ghcr.io/ellean/ruoyi-vue-pro
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # 三腿并行，任一失败即由 ci-ok 给出显式红叉。
+    # fail-fast 首次打通期曾设为 false，好让三腿各自独立报完（否则 Test 一红就把
+    # Docker Build 取消掉，无从判断镜像能否构建）；全链路已绿，改回 true 省算力。
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # 仓库无 spotless/checkstyle/pmd/spotbugs，文档模板的 lint 腿无从跑起；
+          # 改为 Build 腿：runner 侧编译反馈远快于 Docker 腿，能提前暴露编译错误
+          - name: Build
+          - name: Test
+          - name: Docker Build
+    # 本 job 不进入任何 environment：镜像无 build args，部署链路的 secrets 仅 deploy 使用
+    # Docker Build 写 GHCR buildcache 需要 packages:write；Build/Test 不使用该权限
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: ${{ matrix.name == 'Docker Build' && 1 || 0 }}
+
+      # JDK 锁 25：根 pom 是 <java.version>25</java.version> + Spring Boot 4.1.0，
+      # 旧 maven.yml 的 8/11/17 矩阵在此项目上必然编译失败
+      - name: Setup Java
+        if: ${{ matrix.name != 'Docker Build' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build
+        if: ${{ matrix.name == 'Build' }}
+        run: ./mvnw -B -DskipTests package
+
+      # 测试栈是 H2 + jedis-mock + podam，纯内存，不需要外部 MySQL/Redis 服务
+      - name: Test
+        if: ${{ matrix.name == 'Test' }}
+        run: ./mvnw -B test
+
+      - name: Compose image tags
+        if: ${{ matrix.name == 'Docker Build' }}
+        id: meta
+        env:
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          # PR 的 ref_name 形如 10/merge，含 '/' 非法，需 sanitize（本 job 不推送，tag 仅作校验）
+          REF_TAG="${REF//\//-}"
+          TAGS="${IMAGE}:${REF_TAG}
+          ${IMAGE}:${SHA}"
+          if [ "${REF}" = "main" ]; then
+            TAGS="${TAGS}
+          ${IMAGE}:latest"
+          fi
+          {
+            echo 'tags<<__TAGS_EOF__'
+            echo "$TAGS"
+            echo '__TAGS_EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: ${{ matrix.name == 'Docker Build' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: ${{ matrix.name == 'Docker Build' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 只构建不推送；层写入 GHCR buildcache 供 push-image 复用。
+      # 缓存走 registry 而非 gha：gha cache 按 branch ACL 隔离，PR 的缓存落在
+      # refs/pull/N/merge，对 dev/test 不可见，永远无法为分支构建预热。
+      - name: Build image
+        if: ${{ matrix.name == 'Docker Build' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache
+            type=gha
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+
+  ci-ok:
+    name: CI OK
+    runs-on: ubuntu-latest
+    needs: [checks]
+    # 上游失败仍执行判定，输出显式红叉；整跑被取消时跳过，防止取消态被判为通过
+    if: ${{ !cancelled() }}
+    env:
+      FAILURE: ${{ contains(join(needs.*.result, ','), 'failure') }}
+    steps:
+      - name: Check for failure
+        run: |
+          echo $FAILURE
+          if [ "$FAILURE" = "false" ]; then
+            exit 0
+          else
+            exit 1
+          fi
+
+  push-image:
+    name: Push Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: ci-ok
+    # CI 全绿才推送；PR 事件产物不进 registry
+    if: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Compose image tags
+        id: meta
+        env:
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          # dispatch 选中带 '/' 的分支时兜底（push 事件仅 main/test/dev）
+          REF_TAG="${REF//\//-}"
+          TAGS="${IMAGE}:${REF_TAG}
+          ${IMAGE}:${SHA}"
+          if [ "${REF}" = "main" ]; then
+            TAGS="${TAGS}
+          ${IMAGE}:latest"
+          fi
+          {
+            echo 'tags<<__TAGS_EOF__'
+            echo "$TAGS"
+            echo '__TAGS_EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 缓存由同 run 的 Docker Build 腿写入 GHCR buildcache（mode=max），此处只读不写，仅组装+推送
+      - name: Push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache
+            type=gha
+          tags: ${{ steps.meta.outputs.tags }}
+
+  notify:
+    name: WeCom Notify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [ci-ok, push-image]
+    # PR 运行（止于 ci-ok）推 PR 群，push/手动触发推 Actions 群；
+    # 上游失败或被跳过仍要通知（否则 PR 运行永不发送）；整跑被并发取消时静默，由后继运行补发
+    if: ${{ !cancelled() }}
+    permissions:
+      actions: read
+      contents: read
+    env:
+      FAILURE: ${{ contains(join(needs.*.result, ','), 'failure') }}
+      # 消息标题自报端别：与前端仓库共用企微群时靠它区分来源
+      APP_SIDE: 后端
+    steps:
+      - name: Send WeCom notification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WECOM_PR_WEBHOOK: ${{ secrets.WECOM_PR_WEBHOOK }}
+          WECOM_CI_WEBHOOK: ${{ secrets.WECOM_CI_WEBHOOK }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            WEBHOOK="$WECOM_PR_WEBHOOK"
+          else
+            WEBHOOK="$WECOM_CI_WEBHOOK"
+          fi
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::WeCom webhook secret not configured, skip notification"
+            exit 0
+          fi
+
+          # 失败 job 名单与整跑耗时；notify 自身仍在运行、skipped job 无时间戳，均需过滤 null
+          JOBS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" --jq '.jobs')
+          FAILED=$(jq -r '[.[] | select(.conclusion == "failure") | .name] | join("、")' <<<"$JOBS")
+          START=$(jq -r '[.[].started_at | select(. != null)] | min' <<<"$JOBS")
+          END=$(jq -r '[.[].completed_at | select(. != null)] | max' <<<"$JOBS")
+          SECS=$(( $(date -u -d "$END" +%s) - $(date -u -d "$START" +%s) ))
+          DUR="$(( SECS / 60 ))m$(( SECS % 60 ))s"
+
+          if [ "$FAILURE" = "true" ]; then
+            ICON="❌"; LABEL="失败"
+          else
+            ICON="✅"; LABEL="成功"
+          fi
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            HEADLINE="${APP_SIDE} PR CI ${LABEL}"
+            TITLE="**[#${PR_NUMBER} ${PR_TITLE}](${PR_URL})**"
+            WHO="${PR_AUTHOR} · ${PR_HEAD} → ${PR_BASE}"
+          else
+            SUBJECT=$(printf '%s\n' "$HEAD_MSG" | head -1)
+            if [ -z "$SUBJECT" ]; then
+              SUBJECT=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" --jq '.commit.message' | head -1)
+            fi
+            HEADLINE="${APP_SIDE} CI ${LABEL}"
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              HEADLINE="${APP_SIDE} · 手动触发 CI ${LABEL}"
+            fi
+            TITLE="**${SUBJECT}**"
+            WHO="${ACTOR} · ${REF_NAME} · ${SHA:0:8}"
+          fi
+
+          # 版式（仅用企微 markdown 支持的语法）：标题 / 关联对象 / 元信息（灰字引用块）/
+          # 结果行（失败 job 橙字）/ 耗时与运行入口
+          {
+            echo "## ${ICON} ${HEADLINE}"
+            echo ""
+            echo "${TITLE}"
+            echo ""
+            echo "> <font color=\"comment\">👤 ${WHO}</font>"
+            if [ -n "$FAILED" ]; then
+              echo ""
+              echo "⚠️ <font color=\"warning\">失败 job：${FAILED}</font>"
+            fi
+            echo ""
+            echo "⏱ 耗时 ${DUR} · [查看运行](${RUN_URL})"
+          } > /tmp/wecom-msg.md
+
+          PAYLOAD=$(jq -Rs '{msgtype: "markdown", markdown: {content: .}}' /tmp/wecom-msg.md)
+          RESP=$(curl -fsS -m 10 --retry 2 --retry-delay 2 -X POST \
+            -H 'Content-Type: application/json' -d "$PAYLOAD" "$WEBHOOK")
+          echo "$RESP" | jq -e '.errcode == 0' > /dev/null
+          echo "WeCom notified: ${RESP}"

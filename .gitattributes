@@ -1,0 +1,5 @@
+# Maven Wrapper：core.autocrlf=input 会把 mvnw.cmd 存成 LF，
+# 而 cmd.exe 的批处理在纯 LF 下会解析异常（label/goto 失效）。
+# eol=crlf 保证检出时强制还原 CRLF，仓库内仍存 LF。
+mvnw      text eol=lf
+mvnw.cmd  text eol=crlf

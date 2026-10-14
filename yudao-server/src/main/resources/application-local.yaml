@@ -304,10 +304,10 @@ xq:
   listing-template-root: D:/xq-xm/xq-erp/backend/uploads/gigab2b/listing-templates
   rpa:
     # RPA 回调（芋道 admin-api）；生图 Aixoras 仍走旧 ERP，见 erp-base-url
-    callback-base-url: http://127.0.0.1:48080/admin-api
-    callback-token: xq-rpa-callback
+    callback-base-url: ${XQ_RPA_CALLBACK_BASE_URL:http://127.0.0.1:48080/admin-api}
+    callback-token: ${XQ_RPA_CALLBACK_TOKEN:}
     # 旧 ERP（xq-erp）根地址，供 Aixoras/OSS；勿填 5666/48080。个人 RPA 未配或配错前端端口时用此兜底
-    erp-base-url: http://182.92.3.138
+    erp-base-url: ${XQ_ERP_BASE_URL:http://${XQ_PUBLIC_HOST:localhost}}
   ai:
     # ???? spring.ai.openai.*?????? sk-xxxx ??? mock
     base-url: ${OPENAI_BASE_URL:https://api.openai.com}

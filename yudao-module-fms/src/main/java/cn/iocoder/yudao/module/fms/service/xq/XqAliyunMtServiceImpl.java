@@ -166,7 +166,8 @@ public class XqAliyunMtServiceImpl implements XqAliyunMtService {
             String url = "https://" + mtProperties.getEndpoint().trim() + "/";
             int timeout = Math.max(mtProperties.getConnectTimeoutMs(), mtProperties.getReadTimeoutMs());
             try (HttpResponse response = HttpRequest.post(url)
-                    .form(params)
+                    // hutool 的 form 只收 Map<String, Object>，泛型不协变，需按该类型复制一份
+                    .form(new TreeMap<String, Object>(params))
                     .timeout(timeout)
                     .execute()) {
                 String body = response.body();

@@ -1,0 +1,47 @@
+# 镜像构建只需要 pom.xml + src/。工作树约 300MB，不排除会让每次构建
+# 向 buildx 上传全量 context，registry buildcache 的收益被上传耗时吃掉。
+
+# VCS / CI / 元数据
+.git
+.gitignore
+.gitattributes
+.github
+.gitee
+
+# IDE
+.idea
+.vscode
+*.iml
+*.iws
+*.ipr
+
+# 构建产物
+**/target
+.flattened-pom.xml
+
+# 文档与 README 插图
+.image
+docs
+*.md
+
+# 前端仓库指针：仅含 README，实际代码在独立仓库 yudao-ui-admin-vben
+yudao-ui
+
+# 数据库初始化脚本（含误提交的 node_modules）
+sql
+
+# 本地开发与遗留脚本，运行时不需要
+script
+
+# 注意：根 pom.xml 中被注释掉的模块（yudao-module-{mes,mall,hrm,oa,iot,pms,im,bpm,
+# crm,erp,wms,member,mp,report}）没有在此排除。它们虽不参与构建，但一旦有人取消
+# 注释重新启用，源码必须已经在 context 里，否则 Docker 构建会以「找不到源文件」的
+# 形式静默失败。多留约 15MB，换掉一个难排查的坑。
+
+# 调试残留与噪音
+tmp_*
+_inspect_*
+scratch/
+*.log
+.DS_Store
+**/.DS_Store

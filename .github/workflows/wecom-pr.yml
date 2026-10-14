@@ -1,0 +1,75 @@
+name: WeCom PR Notify
+
+# PR 生命周期事件推送企微 PR 群；PR 内 CI 结果由 ci.yml 的 notify job 推送
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, closed]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: WeCom PR Notify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send WeCom notification
+        env:
+          WEBHOOK: ${{ secrets.WECOM_PR_WEBHOOK }}
+          # 消息标题自报端别：本仓库为后端，前端仓库模板为「前端」，同一企微群可区分来源
+          APP_SIDE: 后端
+          ACTION: ${{ github.event.action }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::WECOM_PR_WEBHOOK secret not configured, skip notification"
+            exit 0
+          fi
+
+          case "$ACTION" in
+            opened)
+              if [ "$DRAFT" = "true" ]; then
+                HEADLINE="📬 ${APP_SIDE} · 新 PR #${NUMBER}（草稿）"
+              else
+                HEADLINE="📬 ${APP_SIDE} · 新 PR #${NUMBER}"
+              fi
+              ;;
+            reopened)
+              HEADLINE="🔄 ${APP_SIDE} · PR #${NUMBER} 重新打开"
+              ;;
+            ready_for_review)
+              HEADLINE="📌 ${APP_SIDE} · PR #${NUMBER} 转为待评审"
+              ;;
+            closed)
+              if [ "$MERGED" = "true" ]; then
+                HEADLINE="✅ ${APP_SIDE} · PR #${NUMBER} 已合并"
+              else
+                HEADLINE="❌ ${APP_SIDE} · PR #${NUMBER} 已关闭"
+              fi
+              ;;
+          esac
+
+          # 版式与 ci.yml notify 一致：标题 / 关联对象 / 元信息（灰字引用块）
+          {
+            echo "## ${HEADLINE}"
+            echo ""
+            echo "**[${TITLE}](${URL})**"
+            echo ""
+            echo "> <font color=\"comment\">👤 ${AUTHOR} · ${HEAD} → ${BASE}</font>"
+          } > /tmp/wecom-msg.md
+
+          PAYLOAD=$(jq -Rs '{msgtype: "markdown", markdown: {content: .}}' /tmp/wecom-msg.md)
+          RESP=$(curl -fsS -m 10 --retry 2 --retry-delay 2 -X POST \
+            -H 'Content-Type: application/json' -d "$PAYLOAD" "$WEBHOOK")
+          echo "$RESP" | jq -e '.errcode == 0' > /dev/null
+          echo "WeCom notified: ${RESP}"
