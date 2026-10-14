@@ -20,7 +20,8 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # 新提交只能取消 PR 检查，不能中断正在变更容器的部署。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -220,30 +221,15 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    # 30 分钟：首次要经 tailnet 拉镜像（实测 :dev 压缩后 511MB，其中一层就占 386MB），
-    # 冷启动本身又要 2 分钟上下（见 Verify 步）
     timeout-minutes: 30
     needs: push-image
-    # push 仅 main/test/dev 触发；dispatch 选到其他分支时跳过部署（PR 经 needs 自动跳过）
-    if: ${{ contains(fromJSON('["main", "test", "dev"]'), github.ref_name) }}
-    # 按分支挂接同名 Environment：APP_ENV 由此按环境解析；PR 运行不挂环境，拿不到部署密钥
+    if: ${{ github.event_name != 'pull_request' && github.ref_type == 'branch' && contains(fromJSON('["main", "test", "dev"]'), github.ref_name) }}
     environment: ${{ github.ref_name }}
-    # health_url 供 notify 在部署成功时展示环境探活地址（deploy 被跳过时为空）
-    outputs:
-      health_url: ${{ steps.target.outputs.health_url }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           fetch-depth: 1
-
-      # ephemeral 节点，job 结束自动离网；tag 与前端仓库共用，ACL 里已存在
-      - name: Join tailnet
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:github-actions-xq
 
       - name: Resolve deploy target
         id: target
@@ -253,139 +239,171 @@ jobs:
           BASE_PATH: ${{ vars.DEPLOY_PATH }}
         run: |
           set -euo pipefail
-          # 缺配置直接报错中止，避免静默跳过部署
-          : "${HOST:?repository variable DEPLOY_HOST is required}"
-          : "${SSH_USER:?repository variable DEPLOY_USER is required}"
-          BASE_PATH="${BASE_PATH:-/home/edward/star-ecom-erp-api}"
-          case "${GITHUB_REF_NAME}" in
-            # 宿主机端口段避开前端的 8010-8012；容器内端口由 APP_ENV 的 SERVER_PORT 决定，
-            # 默认 48080，compose 的映射跟着它走，见 docker-compose.yml
+          : "${HOST:?DEPLOY_HOST is required}"
+          : "${SSH_USER:?DEPLOY_USER is required}"
+          : "${BASE_PATH:?DEPLOY_PATH is required}"
+          [[ "$HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || exit 1
+          [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 1
+          [[ "$BASE_PATH" =~ ^/[a-zA-Z0-9_./-]+$ && "$BASE_PATH" != *'/../'* && "$BASE_PATH" != */.. ]] || exit 1
+          case "$GITHUB_REF_NAME" in
             main) PORT=8020; NAME=star-ecom-erp-api ;;
             test) PORT=8021; NAME=star-ecom-erp-api-test ;;
             dev)  PORT=8022; NAME=star-ecom-erp-api-dev ;;
-            *)    echo "::error::未映射的分支 ${GITHUB_REF_NAME}"; exit 1 ;;
+            *) exit 1 ;;
           esac
           {
             echo "host=$HOST"
             echo "user=$SSH_USER"
-            echo "dir=${BASE_PATH}/${GITHUB_REF_NAME}"
+            echo "dir=${BASE_PATH%/}/$GITHUB_REF_NAME"
             echo "port=$PORT"
             echo "name=$NAME"
-            echo "project=star-ecom-erp-api-${GITHUB_REF_NAME}"
-            echo "health_url=http://${HOST}:${PORT}/actuator/health"
+            echo "project=star-ecom-erp-api-$GITHUB_REF_NAME"
           } >> "$GITHUB_OUTPUT"
 
-      # APP_ENV 是整份填好真值的 .env.example（Environment secret，main/test/dev 各一份）。
-      # 用一份 blob 而不是 60 个独立 secret：键名清单已经在仓库里（.env.example），拆成
-      # 60 个 secret 只会让「模板加一个键」变成「三个环境各加一个 secret」的三倍工作量。
-      # 代价是自由文本没法靠 GitHub 校验，所以下面自己校验形状与必填项。
       - name: Render runtime .env
         env:
           APP_ENV: ${{ secrets.APP_ENV }}
           PROJECT: ${{ steps.target.outputs.project }}
-          # 用完整 sha 而不是分支名当 tag：分支 tag 是可变的，部署机上一次手动
-          # docker compose pull 就会悄悄换成别的构建；sha tag 让 `cat .env` 直接说明线上跑的是哪次构建。
-          # 回滚 = 把 IMAGE_TAG 改成历史 sha 再 up -d（push-image 同时推了分支 tag 与 sha tag）。
           TAG: ${{ github.sha }}
           HOST_PORT: ${{ steps.target.outputs.port }}
           NAME: ${{ steps.target.outputs.name }}
         run: |
-          set -euo pipefail
-          : "${APP_ENV:?environment secret APP_ENV is required —— 填一份 .env.example 的真值，见 docs/部署.md}"
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import sys
 
-          # 键名写错不会报错、只会静默回落到 yaml 默认值，所以先卡形状：
-          # 非注释非空行必须是 KEY=VALUE
-          BAD_SHAPE=$(printf '%s\n' "$APP_ENV" \
-            | grep -vE '^[[:space:]]*(#|$)' \
-            | grep -vE '^[A-Za-z_][A-Za-z0-9_]*=' || true)
-          if [ -n "$BAD_SHAPE" ]; then
-            echo "::error::APP_ENV 里有不是 KEY=VALUE 形状的行（只回显首个字段，值一律抹掉）"
-            # 形状错的行往往正是「把 : 当成了 =」这类手误，整行回显等于把口令写进 CI 日志
-            printf '%s\n' "$BAD_SHAPE" | awk '{print $1}' | sed -E 's/[=:].*/=<redacted>/'
-            exit 1
-          fi
+          def fail(message):
+              pathlib.Path('.env.deploy').unlink(missing_ok=True)
+              sys.exit('::error::' + message)
 
-          # 这四个键由 CI 按分支计算，被 APP_ENV 覆盖就会让三个环境的编排互相踩
-          # （SERVER_PORT 不在其列：compose 的映射与镜像的 HEALTHCHECK 都跟着它走，改了不会失配）
-          FORBIDDEN=$(printf '%s\n' "$APP_ENV" \
-            | grep -oE '^(COMPOSE_PROJECT_NAME|IMAGE_TAG|HOST_PORT|CONTAINER_NAME)=' || true)
-          if [ -n "$FORBIDDEN" ]; then
-            echo "::error::这些键不能写进 APP_ENV（由 CI / 镜像决定）：$(printf '%s' "$FORBIDDEN" | tr -d '=' | sort -u | tr '\n' ' ')"
-            exit 1
-          fi
+          content = os.environ.get('APP_ENV', '')
+          if not content.strip():
+              fail('Environment secret APP_ENV is required; see docs/部署.md')
+          allowed = set(re.findall(r'^#?\s*([A-Z][A-Z0-9_]*)=', pathlib.Path('.env.example').read_text(), re.M))
+          allowed.add('JAVA_OPTS')
+          seen = set()
+          for number, line in enumerate(content.splitlines(), 1):
+              if not line.strip() or line.lstrip().startswith('#'):
+                  continue
+              match = re.fullmatch(r'([A-Z][A-Z0-9_]*)=(.*)', line)
+              if not match:
+                  fail(f'APP_ENV line {number}: expected a single-line KEY=VALUE')
+              key, value = match.groups()
+              if key not in allowed or key in seen:
+                  fail(f'APP_ENV line {number}: unknown, reserved or duplicate key')
+              seen.add(key)
+              if '$' in value and not (value.startswith("'") and value.endswith("'")):
+                  fail(f'APP_ENV line {number}: values containing $ must be single-quoted')
 
-          # 数据库与 Redis 缺了应用必然起不来；与其让容器反复重启，不如在这里就红掉
-          for KEY in MYSQL_HOST MASTER_DATASOURCE_PASSWORD REDIS_HOST; do
-            if ! printf '%s\n' "$APP_ENV" | grep -qE "^${KEY}=.+$"; then
-              echo "::error::APP_ENV 缺少 ${KEY} 或其值为空（键名清单见 .env.example）"
-              exit 1
-            fi
-          done
+          os.umask(0o077)
+          topology = {'COMPOSE_PROJECT_NAME': os.environ['PROJECT'], 'IMAGE_TAG': os.environ['TAG'],
+                      'HOST_PORT': os.environ['HOST_PORT'], 'CONTAINER_NAME': os.environ['NAME']}
+          pathlib.Path('.env.deploy').write_text(''.join(f'{k}={v}\n' for k, v in topology.items()) + content + '\n')
+          parsed = subprocess.run(
+              ['docker', 'compose', '--env-file', '.env.deploy', '-f', 'docker-compose.yml', 'config', '--format', 'json'],
+              env={**os.environ, 'APP_ENV_FILE': '.env.deploy'}, capture_output=True, text=True)
+          if parsed.returncode or parsed.stderr:
+              fail('APP_ENV cannot be parsed without warnings; values and parser output are withheld')
+          # Compose config 会把字面量 $ 序列化成 $$，校验与掩码必须使用容器收到的原值。
+          runtime = {key: value.replace('$$', '$') for key, value in
+                     json.loads(parsed.stdout)['services']['app']['environment'].items()}
+          for key in ('MASTER_DATASOURCE_PASSWORD', 'REDIS_HOST', 'MYBATIS_ENCRYPTOR_PASSWORD'):
+              if not (runtime.get(key) or '').strip():
+                  fail(f'APP_ENV requires a nonempty {key}')
+          if not (runtime.get('MYSQL_HOST') or runtime.get('MASTER_DATASOURCE_URL') or '').strip():
+              fail('APP_ENV requires MYSQL_HOST or MASTER_DATASOURCE_URL')
+          if len(runtime['MYBATIS_ENCRYPTOR_PASSWORD'].encode()) not in (16, 24, 32):
+              fail('MYBATIS_ENCRYPTOR_PASSWORD must contain 16, 24 or 32 UTF-8 bytes')
+          port = runtime.get('SERVER_PORT', '48080')
+          if not re.fullmatch(r'[0-9]+', port) or not 1 <= int(port) <= 65535:
+              fail('SERVER_PORT must be between 1 and 65535')
+          for value in runtime.values():
+              if value:
+                  escaped = value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print('::add-mask::' + escaped)
+          print('APP_ENV validated; values are not logged')
+          PY
 
-          {
-            echo "# 由 CI 的 deploy job 生成；compose 文件与 .env 以仓库为唯一事实源，不要手改"
-            echo "# 编排键按分支计算，其余运行期配置来自 Environment secret APP_ENV"
-            echo "COMPOSE_PROJECT_NAME=${PROJECT}"
-            echo "IMAGE_TAG=${TAG}"
-            echo "HOST_PORT=${HOST_PORT}"
-            echo "CONTAINER_NAME=${NAME}"
-            printf '%s\n' "$APP_ENV"
-          } > .env.deploy
-          # 只报键数，不回显内容
-          echo "rendered $(grep -cE '^[A-Za-z_]' .env.deploy) keys into .env.deploy"
+      - name: Join tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions-xq
 
       - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
-          : "${SSH_KEY:?repository secret DEPLOY_SSH_KEY is required}"
+          set -euo pipefail
+          : "${SSH_KEY:?DEPLOY_SSH_KEY is required}"
+          umask 077
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-      # 服务器上的 compose 文件与 .env 每次部署覆盖同步
-      - name: Deploy over SSH
+      - name: Deploy and verify over SSH
         env:
           HOST: ${{ steps.target.outputs.host }}
           SSH_USER: ${{ steps.target.outputs.user }}
           DIR: ${{ steps.target.outputs.dir }}
+          TAG: ${{ github.sha }}
+          HOST_PORT: ${{ steps.target.outputs.port }}
         run: |
           set -euo pipefail
-          # tailnet 内是 WireGuard 加密链路，主机指纹首次信任（TOFU）
-          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
-          # 先把 .env 以 600 建出来：scp 覆盖已存在的文件时保留其权限位，于是凭据从落地那一刻
-          # 起就是 600，不存在「先 644 躺一会儿再 chmod」的窗口
-          ssh $SSH_OPTS "${SSH_USER}@${HOST}" \
-            "mkdir -p '${DIR}' && touch '${DIR}/.env' && chmod 600 '${DIR}/.env'"
-          scp $SSH_OPTS docker-compose.yml "${SSH_USER}@${HOST}:${DIR}/docker-compose.yml"
-          scp $SSH_OPTS .env.deploy "${SSH_USER}@${HOST}:${DIR}/.env"
-          rm -f .env.deploy
-          # --remove-orphans 清掉改名后遗留的旧容器，避免它继续占着宿主机端口
-          ssh $SSH_OPTS "${SSH_USER}@${HOST}" \
-            "cd '${DIR}' \
-             && docker compose pull --quiet \
-             && docker compose up -d --remove-orphans \
-             && docker compose ps \
-             && docker image prune -f > /dev/null"
+          SSH_OPTS=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+          TARGET="${SSH_USER}@${HOST}"
+          BIND_IP=$(ssh "${SSH_OPTS[@]}" "$TARGET" "docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'")
+          BIND_IP="$BIND_IP" python3 - <<'PY'
+          import ipaddress, os
+          ip = ipaddress.IPv4Address(os.environ['BIND_IP'])
+          if not ip.is_private or ip.is_unspecified or ip.is_loopback or ip.is_link_local:
+              raise SystemExit('Docker bridge must have a private IPv4 gateway')
+          PY
+          printf 'HOST_BIND_IP=%s\n' "$BIND_IP" >> .env.deploy
+          STAGE=$(ssh "${SSH_OPTS[@]}" "$TARGET" "umask 077; mkdir -p '$DIR' && mktemp -d '$DIR/.deploy.XXXXXXXX'")
+          [[ "$STAGE" == "$DIR"/.deploy.* && "$STAGE" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          scp "${SSH_OPTS[@]}" docker-compose.yml .env.deploy "$TARGET:$STAGE/"
+          ssh "${SSH_OPTS[@]}" "$TARGET" "bash -s -- '$DIR' '$STAGE' '$TAG' '$HOST_PORT' '$BIND_IP'" <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          dir=$1; stage=$2; tag=$3; port=$4; bind_ip=$5
+          trap 'rm -f "$stage/.env.deploy" "$stage/docker-compose.yml" "$stage/health.json"; rmdir "$stage"' EXIT
+          exec 9>"$dir/.deploy.lock"
+          flock -w 600 9
+          export APP_ENV_FILE="$stage/.env.deploy"
+          compose=(docker compose --project-directory "$dir" --env-file "$stage/.env.deploy" -f "$stage/docker-compose.yml")
+          if ! "${compose[@]}" config --quiet > /dev/null 2>&1; then
+            echo '::error::Remote Compose validation failed; inspect configuration locally on the host'
+            exit 1
+          fi
+          if ! "${compose[@]}" pull --quiet app > /dev/null 2>&1; then
+            echo '::error::Image pull failed; existing deployment has not been changed'
+            exit 1
+          fi
+          expected=$(docker image inspect "ghcr.io/ellean/ruoyi-vue-pro:$tag" --format '{{.Id}}')
+          if ! "${compose[@]}" up -d --pull never --wait --wait-timeout 300 app > /dev/null 2>&1; then
+            echo '::error::Container failed to become healthy; inspect app logs on the host and roll back if needed'
+            exit 1
+          fi
+          cid=$("${compose[@]}" ps -q app)
+          [[ -n "$cid" && "$(docker inspect --format '{{.Image}}' "$cid")" == "$expected" ]]
+          [[ "$(docker inspect --format '{{.State.Health.Status}}' "$cid")" == healthy ]]
+          code=$(curl -s --max-time 5 -o "$stage/health.json" -w '%{http_code}' "http://$bind_ip:$port/actuator/health")
+          [[ "$code" == 200 ]]
+          python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])).get("status") != "UP")' "$stage/health.json"
+          mv "$stage/.env.deploy" "$dir/.env"
+          mv "$stage/docker-compose.yml" "$dir/docker-compose.yml"
+          echo 'Deployment verified: expected image, healthy container and HTTP 200/UP'
+          REMOTE
 
-      # 直连自己端口探测，不经前端反代。/actuator/** 是 permitAll
-      # （yudao-module-infra 的 SecurityConfiguration），无需带 token。
-      # 5 分钟窗口：模块多 + quartz 集群 + AI 依赖，冷启动明显慢于普通 Spring Boot 应用，
-      # Dockerfile 的 HEALTHCHECK start-period 同样给了 120s。
-      - name: Verify over tailnet
-        env:
-          HEALTH_URL: ${{ steps.target.outputs.health_url }}
-        run: |
-          for i in $(seq 1 60); do
-            if curl -fsS --max-time 5 "$HEALTH_URL" > /dev/null; then
-              echo "OK: $HEALTH_URL is UP"
-              exit 0
-            fi
-            echo "attempt $i/60 not ready, retrying in 5s..."
-            sleep 5
-          done
-          echo "::error::health check failed: $HEALTH_URL 在 300s 内未 UP（docker compose logs app 看启动日志）"
-          exit 1
+      - name: Clean runner credentials
+        if: ${{ always() }}
+        run: rm -f .env.deploy ~/.ssh/deploy_key
 
   notify:
     name: WeCom Notify
@@ -414,7 +432,6 @@ jobs:
           ACTOR: ${{ github.actor }}
           HEAD_MSG: ${{ github.event.head_commit.message }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
-          HEALTH_URL: ${{ needs.deploy.outputs.health_url }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -478,11 +495,9 @@ jobs:
               echo ""
               echo "⚠️ <font color=\"warning\">失败 job：${FAILED}</font>"
             fi
-            # 后端不开 Funnel（见 docker-compose.yml 注释），所以给的是 tailnet 内的探活地址，
-            # 只有连上 tailnet 的人打得开；deploy 被跳过时 health_url 为空，本行自动不出现
-            if [ "$FAILURE" = "false" ] && [ "$DEPLOY_RESULT" = "success" ] && [ -n "$HEALTH_URL" ]; then
+            if [ "$FAILURE" = "false" ] && [ "$DEPLOY_RESULT" = "success" ]; then
               echo ""
-              echo "🚀 <font color=\"info\">已部署 ${REF_NAME} 环境</font>　[探活](${HEALTH_URL})"
+              echo "<font color=\"info\">已部署 ${REF_NAME} 环境（镜像与健康检查已验证）</font>"
             fi
             echo ""
             echo "⏱ 耗时 ${DUR} · [查看运行](${RUN_URL})"

@@ -1,45 +1,21 @@
-# 后端运行时编排（三个分支各起一份，互不干扰）。
-#
-# 镜像由 .github/workflows/ci.yml 构建并推送到 GHCR；本文件与同目录的 .env 由 CI 的 deploy
-# job 每次部署覆盖同步 —— 仓库是 compose 文件的唯一事实源，禁止在部署机上手改。
-#
-# .env 的两部分来源：
-#   COMPOSE_PROJECT_NAME / IMAGE_TAG / HOST_PORT / CONTAINER_NAME   CI 按分支计算
-#   其余全部运行期配置（数据库、Redis、各平台密钥…）                 GitHub Environment
-#                                                                  secret APP_ENV
-# APP_ENV 的键名清单就是根目录的 .env.example，逐项填真值后整份贴进去。
-#
-# 本地跑：cp .env.example .env && chmod 600 .env && $EDITOR .env && docker compose up -d
-
 services:
   app:
     image: ghcr.io/ellean/ruoyi-vue-pro:${IMAGE_TAG:-dev}
     container_name: ${CONTAINER_NAME:-star-ecom-erp-api}
-    # 左边是宿主机端口，按分支分配 8020/8021/8022，避开前端的 8010-8012；前端 nginx 经
-    # host.docker.internal:802x 反代到这里。
-    # 右边是容器内端口，跟着 SERVER_PORT 走（application-prod.yaml 里是 ${SERVER_PORT:48080}，
-    # 与 Dockerfile 的 EXPOSE / HEALTHCHECK 同源）。两边都参数化，改端口才不会让映射失配 ——
-    # 但正常情况下没必要改容器内端口，换环境只动 HOST_PORT。
+    # CI 绑定 Docker 默认网桥地址，供前端 host.docker.internal 访问，而不是监听所有接口。
     ports:
-      - '${HOST_PORT:-8022}:${SERVER_PORT:-48080}'
+      - '${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-8022}:${SERVER_PORT:-48080}'
     restart: unless-stopped
     pull_policy: always
     env_file:
-      - .env
-    # 宿主机上的 MySQL / Redis 走这个别名访问；yaml 里 MYSQL_HOST / REDIS_HOST 的默认值
-    # 就是它，所以「数据库和后端同机」这种最常见布局不用额外配置。
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:
-      # 日志（LOG_PATH）与上传的 Excel 上架分表模板（XQ_LISTING_TEMPLATE_ROOT）都是要跨
-      # 部署留存的状态，不挂卷就会在每次 up -d 换容器时丢掉。具名卷自带
-      # COMPOSE_PROJECT_NAME 前缀，三个分支天然隔离。
       - app-logs:/data/logs
       - app-uploads:/data/xq-erp/uploads
-
-# 不开 Tailscale Funnel sidecar：后端全量接口（含 Swagger、Druid、actuator）直接暴露公网
-# 不是我们想要的，前端 nginx 的同源反代已经覆盖了浏览器需要的全部路径。tailnet 内仍可直连
-# 802x，CI 的健康检查走的就是这条路。要开的话参照前端仓库 docs/springboot-deploy.md §2.4。
 
 volumes:
   app-logs:
