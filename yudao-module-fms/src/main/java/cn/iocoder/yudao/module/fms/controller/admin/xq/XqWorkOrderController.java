@@ -27,6 +27,7 @@ import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderR
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderReviseImageTaskVO;
 import cn.iocoder.yudao.module.fms.controller.admin.xq.vo.workorder.XqWorkOrderUpdateReqVO;
 import cn.iocoder.yudao.module.fms.dal.dataobject.xq.XqWorkOrderDO;
+import cn.iocoder.yudao.module.fms.service.xq.XqAiUsageLogService;
 import cn.iocoder.yudao.module.fms.service.xq.XqCopyPipelineService;
 import cn.iocoder.yudao.module.fms.service.xq.XqImagePipelineService;
 import cn.iocoder.yudao.module.fms.service.xq.XqImageReviseAsyncService;
