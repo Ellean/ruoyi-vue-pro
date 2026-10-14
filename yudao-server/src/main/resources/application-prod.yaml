@@ -155,6 +155,14 @@ yudao:
   access-log:
     enable: true
   demo: false
+  # application.yaml 把验证码区间写成 9999~9999（上游为「测试方便」留的默认值），而
+  # /admin-api/system/auth/{send-sms-code,sms-login,reset-password} 三个端点都是 @PermitAll，
+  # createSmsCode 又是先落库再发送 —— 合起来等于「任意管理员手机号 + 9999」就能拿到后台 token。
+  # 生产必须放开成真实随机区间。注意 SmsCodeServiceImpl 没有失败次数限制，验证码本身仍可被
+  # 暴力枚举，要彻底堵住得再打开 AuthController 里注释掉的 @RateLimiter。
+  sms-code:
+    begin-code: 1000
+    end-code: 9999
 
 justauth:
   enabled: true
