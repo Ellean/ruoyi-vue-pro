@@ -67,7 +67,12 @@ mybatis-plus:
     banner: false # 关闭控制台的 Banner 打印
   type-aliases-package: ${yudao.info.base-package}.module.*.dal.dataobject
   encryptor:
-    password: XDV71a+xqStEA3WH # 加解密的秘钥，可使用 https://www.imaegoo.com/2020/aes-key-generator/ 网站生成
+    # EncryptTypeHandler 的 AES 密钥，DataSourceConfigDO.password 落库前用它加密。
+    # 默认值是上游公开值，等于「加密了但谁都能解」；生产必须用 MYBATIS_ENCRYPTOR_PASSWORD
+    # 注入私有密钥。两个约束：不能留空（getEncryptor 里 Assert.notEmpty 会抛），且换密钥后
+    # 已加密的存量行解不开，必须同步重加密。长度须为 16/24/32 字节，SecureUtil.aes 直接取 getBytes()。
+    # 生成：https://www.imaegoo.com/2020/aes-key-generator/
+    password: ${MYBATIS_ENCRYPTOR_PASSWORD:XDV71a+xqStEA3WH}
 
 mybatis-plus-join:
   banner: false # 是否打印 mybatis plus join banner，默认true
