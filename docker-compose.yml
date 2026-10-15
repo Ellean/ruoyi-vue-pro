@@ -1,0 +1,56 @@
+services:
+  app:
+    image: ghcr.io/ellean/ruoyi-vue-pro:${IMAGE_TAG:-dev}
+    container_name: ${CONTAINER_NAME:-star-ecom-erp-api}
+    # CI 绑定 Docker 默认网桥地址，供前端 host.docker.internal 访问，而不是监听所有接口。
+    ports:
+      - '${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-8022}:${SERVER_PORT:-48080}'
+    restart: unless-stopped
+    pull_policy: always
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+    depends_on:
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - app-logs:/data/logs
+      - app-uploads:/data/xq-erp/uploads
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+    command:
+      - sh
+      - -ec
+      - |
+        umask 077
+        hash=$$(printf '%s' "$$REDIS_PASSWORD" | sha256sum)
+        printf 'user default on #%s ~* &* +@all\n' "$${hash%% *}" > /run/redis/users.acl
+        chown redis:redis /run/redis/users.acl
+        exec /usr/local/bin/docker-entrypoint.sh redis-server \
+          --port "$$REDIS_PORT" --appendonly yes --appendfsync everysec \
+          --aclfile /run/redis/users.acl
+    healthcheck:
+      test: ["CMD-SHELL", "reply=$$(REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli -h 127.0.0.1 -p \"$$REDIS_PORT\" ping 2>/dev/null) && [ \"$$reply\" = PONG ]"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 12
+    tmpfs:
+      - /run/redis
+    volumes:
+      - redis-data:/data
+
+volumes:
+  app-logs:
+  app-uploads:
+  redis-data:

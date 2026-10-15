@@ -20,7 +20,8 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # 新提交只能取消 PR 检查，不能中断正在变更容器的部署。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -93,6 +94,10 @@ jobs:
       - name: Test
         if: ${{ matrix.name == 'Test' }}
         run: ./mvnw -B -s .mvn/settings-ci.xml test
+
+      - name: Verify deployment stack
+        if: ${{ matrix.name == 'Test' }}
+        run: python3 script/test_deploy.py
 
       - name: Compose image tags
         if: ${{ matrix.name == 'Docker Build' }}
@@ -217,11 +222,208 @@ jobs:
             type=gha
           tags: ${{ steps.meta.outputs.tags }}
 
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: push-image
+    if: ${{ github.event_name != 'pull_request' && github.ref_type == 'branch' && contains(fromJSON('["main", "test", "dev"]'), github.ref_name) }}
+    environment: ${{ github.ref_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Resolve deploy target
+        id: target
+        env:
+          HOST: ${{ vars.DEPLOY_HOST }}
+          SSH_USER: ${{ vars.DEPLOY_USER }}
+          BASE_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          set -euo pipefail
+          : "${HOST:?DEPLOY_HOST is required}"
+          : "${SSH_USER:?DEPLOY_USER is required}"
+          : "${BASE_PATH:?DEPLOY_PATH is required}"
+          [[ "$HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || exit 1
+          [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 1
+          [[ "$BASE_PATH" =~ ^/[a-zA-Z0-9_./-]+$ && "$BASE_PATH" != *'/../'* && "$BASE_PATH" != */.. ]] || exit 1
+          case "$GITHUB_REF_NAME" in
+            main) PORT=8020; NAME=star-ecom-erp-api ;;
+            test) PORT=8021; NAME=star-ecom-erp-api-test ;;
+            dev)  PORT=8022; NAME=star-ecom-erp-api-dev ;;
+            *) exit 1 ;;
+          esac
+          {
+            echo "host=$HOST"
+            echo "user=$SSH_USER"
+            echo "dir=${BASE_PATH%/}/$GITHUB_REF_NAME"
+            echo "port=$PORT"
+            echo "name=$NAME"
+            echo "project=star-ecom-erp-api-$GITHUB_REF_NAME"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Render runtime .env
+        env:
+          APP_ENV: ${{ secrets.APP_ENV }}
+          PROJECT: ${{ steps.target.outputs.project }}
+          TAG: ${{ github.sha }}
+          HOST_PORT: ${{ steps.target.outputs.port }}
+          NAME: ${{ steps.target.outputs.name }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import sys
+
+          def fail(message):
+              pathlib.Path('.env.deploy').unlink(missing_ok=True)
+              sys.exit('::error::' + message)
+
+          content = os.environ.get('APP_ENV', '')
+          if not content.strip():
+              fail('Environment secret APP_ENV is required; see docs/部署.md')
+          allowed = set(re.findall(r'^#?\s*([A-Z][A-Z0-9_]*)=', pathlib.Path('.env.example').read_text(), re.M))
+          allowed.add('JAVA_OPTS')
+          seen = set()
+          for number, line in enumerate(content.splitlines(), 1):
+              if not line.strip() or line.lstrip().startswith('#'):
+                  continue
+              match = re.fullmatch(r'([A-Z][A-Z0-9_]*)=(.*)', line)
+              if not match:
+                  fail(f'APP_ENV line {number}: expected a single-line KEY=VALUE')
+              key, value = match.groups()
+              if key not in allowed or key in seen:
+                  fail(f'APP_ENV line {number}: unknown, reserved or duplicate key')
+              seen.add(key)
+              if '$' in value and not (value.startswith("'") and value.endswith("'")):
+                  fail(f'APP_ENV line {number}: values containing $ must be single-quoted')
+
+          os.umask(0o077)
+          topology = {'COMPOSE_PROJECT_NAME': os.environ['PROJECT'], 'IMAGE_TAG': os.environ['TAG'],
+                      'HOST_PORT': os.environ['HOST_PORT'], 'CONTAINER_NAME': os.environ['NAME']}
+          pathlib.Path('.env.deploy').write_text(''.join(f'{k}={v}\n' for k, v in topology.items()) + content + '\n')
+          parsed = subprocess.run(
+              ['docker', 'compose', '--env-file', '.env.deploy', '-f', 'docker-compose.yml', 'config', '--format', 'json'],
+              env={**os.environ, 'APP_ENV_FILE': '.env.deploy'}, capture_output=True, text=True)
+          if parsed.returncode or parsed.stderr:
+              fail('APP_ENV cannot be parsed without warnings; values and parser output are withheld')
+          # Compose config 会把字面量 $ 序列化成 $$，校验与掩码必须使用容器收到的原值。
+          runtime = {key: value.replace('$$', '$') for key, value in
+                     json.loads(parsed.stdout)['services']['app']['environment'].items()}
+          for key in ('MASTER_DATASOURCE_USERNAME', 'MASTER_DATASOURCE_PASSWORD', 'REDIS_PASSWORD', 'MYBATIS_ENCRYPTOR_PASSWORD'):
+              if not (runtime.get(key) or '').strip():
+                  fail(f'APP_ENV requires a nonempty {key}')
+          if runtime.get('REDIS_HOST') != 'redis':
+              fail('REDIS_HOST must be redis for the Compose-managed service')
+          if not (runtime.get('MYSQL_HOST') or runtime.get('MASTER_DATASOURCE_URL') or '').strip():
+              fail('APP_ENV requires MYSQL_HOST or MASTER_DATASOURCE_URL')
+          if len(runtime['MYBATIS_ENCRYPTOR_PASSWORD'].encode()) not in (16, 24, 32):
+              fail('MYBATIS_ENCRYPTOR_PASSWORD must contain 16, 24 or 32 UTF-8 bytes')
+          for key, default in (('SERVER_PORT', '48080'), ('REDIS_PORT', '6379')):
+              port = runtime.get(key, default)
+              if not re.fullmatch(r'[0-9]+', port) or not 1 <= int(port) <= 65535:
+                  fail(f'{key} must be between 1 and 65535')
+          database = runtime.get('REDIS_DATABASE', '0')
+          if not re.fullmatch(r'[0-9]+', database) or not 0 <= int(database) < 16:
+              fail('REDIS_DATABASE must be between 0 and 15')
+          for value in runtime.values():
+              if value:
+                  escaped = value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print('::add-mask::' + escaped)
+          print('APP_ENV validated; values are not logged')
+          PY
+
+      - name: Join tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions-xq
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          : "${SSH_KEY:?DEPLOY_SSH_KEY is required}"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Deploy and verify over SSH
+        env:
+          HOST: ${{ steps.target.outputs.host }}
+          SSH_USER: ${{ steps.target.outputs.user }}
+          DIR: ${{ steps.target.outputs.dir }}
+          TAG: ${{ github.sha }}
+          HOST_PORT: ${{ steps.target.outputs.port }}
+        run: |
+          set -euo pipefail
+          SSH_OPTS=(-i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+          TARGET="${SSH_USER}@${HOST}"
+          BIND_IP=$(ssh "${SSH_OPTS[@]}" "$TARGET" "docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'")
+          BIND_IP="$BIND_IP" python3 - <<'PY'
+          import ipaddress, os
+          ip = ipaddress.IPv4Address(os.environ['BIND_IP'])
+          if not ip.is_private or ip.is_unspecified or ip.is_loopback or ip.is_link_local:
+              raise SystemExit('Docker bridge must have a private IPv4 gateway')
+          PY
+          printf 'HOST_BIND_IP=%s\n' "$BIND_IP" >> .env.deploy
+          STAGE=$(ssh "${SSH_OPTS[@]}" "$TARGET" "umask 077; mkdir -p '$DIR' && mktemp -d '$DIR/.deploy.XXXXXXXX'")
+          [[ "$STAGE" == "$DIR"/.deploy.* && "$STAGE" =~ ^/[a-zA-Z0-9_./-]+$ ]] || exit 1
+          scp "${SSH_OPTS[@]}" docker-compose.yml .env.deploy "$TARGET:$STAGE/"
+          ssh "${SSH_OPTS[@]}" "$TARGET" "bash -s -- '$DIR' '$STAGE' '$TAG' '$HOST_PORT' '$BIND_IP'" <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          dir=$1; stage=$2; tag=$3; port=$4; bind_ip=$5
+          trap 'rm -f "$stage/.env.deploy" "$stage/docker-compose.yml" "$stage/health.json"; rmdir "$stage"' EXIT
+          exec 9>"$dir/.deploy.lock"
+          flock -w 600 9
+          export APP_ENV_FILE="$stage/.env.deploy"
+          compose=(docker compose --project-directory "$dir" --env-file "$stage/.env.deploy" -f "$stage/docker-compose.yml")
+          if ! "${compose[@]}" config --quiet > /dev/null 2>&1; then
+            echo '::error::Remote Compose validation failed; inspect configuration locally on the host'
+            exit 1
+          fi
+          if ! "${compose[@]}" pull --quiet app redis > /dev/null 2>&1; then
+            echo '::error::Image pull failed; existing deployment has not been changed'
+            exit 1
+          fi
+          expected=$(docker image inspect "ghcr.io/ellean/ruoyi-vue-pro:$tag" --format '{{.Id}}')
+          expected_redis=$(docker image inspect "$("${compose[@]}" config --images redis)" --format '{{.Id}}')
+          if ! "${compose[@]}" up -d --pull never --wait --wait-timeout 300 app redis > /dev/null 2>&1; then
+            echo '::error::App or Redis failed to become healthy; inspect service logs on the host and roll back if needed'
+            exit 1
+          fi
+          cid=$("${compose[@]}" ps -q app)
+          [[ -n "$cid" && "$(docker inspect --format '{{.Image}}' "$cid")" == "$expected" ]]
+          [[ "$(docker inspect --format '{{.State.Health.Status}}' "$cid")" == healthy ]]
+          redis_cid=$("${compose[@]}" ps -q redis)
+          [[ -n "$redis_cid" && "$(docker inspect --format '{{.Image}}' "$redis_cid")" == "$expected_redis" ]]
+          [[ "$(docker inspect --format '{{.State.Health.Status}}' "$redis_cid")" == healthy ]]
+          code=$(curl -s --max-time 5 -o "$stage/health.json" -w '%{http_code}' "http://$bind_ip:$port/actuator/health")
+          [[ "$code" == 200 ]]
+          python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])).get("status") != "UP")' "$stage/health.json"
+          mv "$stage/.env.deploy" "$dir/.env"
+          mv "$stage/docker-compose.yml" "$dir/docker-compose.yml"
+          echo 'Deployment verified: expected image, healthy container and HTTP 200/UP'
+          REMOTE
+
+      - name: Clean runner credentials
+        if: ${{ always() }}
+        run: rm -f .env.deploy ~/.ssh/deploy_key
+
   notify:
     name: WeCom Notify
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [ci-ok, push-image]
+    needs: [ci-ok, push-image, deploy]
     # PR 运行（止于 ci-ok）推 PR 群，push/手动触发推 Actions 群；
     # 上游失败或被跳过仍要通知（否则 PR 运行永不发送）；整跑被并发取消时静默，由后继运行补发
     if: ${{ !cancelled() }}
@@ -243,6 +445,7 @@ jobs:
           SHA: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
           HEAD_MSG: ${{ github.event.head_commit.message }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -295,7 +498,7 @@ jobs:
           fi
 
           # 版式（仅用企微 markdown 支持的语法）：标题 / 关联对象 / 元信息（灰字引用块）/
-          # 结果行（失败 job 橙字）/ 耗时与运行入口
+          # 结果行（失败 job 橙字、部署成功绿字）/ 耗时与运行入口
           {
             echo "## ${ICON} ${HEADLINE}"
             echo ""
@@ -305,6 +508,10 @@ jobs:
             if [ -n "$FAILED" ]; then
               echo ""
               echo "⚠️ <font color=\"warning\">失败 job：${FAILED}</font>"
+            fi
+            if [ "$FAILURE" = "false" ] && [ "$DEPLOY_RESULT" = "success" ]; then
+              echo ""
+              echo "<font color=\"info\">已部署 ${REF_NAME} 环境（镜像与健康检查已验证）</font>"
             fi
             echo ""
             echo "⏱ 耗时 ${DUR} · [查看运行](${RUN_URL})"

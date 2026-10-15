@@ -87,8 +87,8 @@ EXPOSE 48080
 
 USER app
 
-# start-period 给足：模块多 + quartz 集群 + AI 依赖，冷启动明显慢于普通 Spring Boot 应用
+# 端口在运行期展开，与 Spring 的 SERVER_PORT 保持一致。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:48080/actuator/health || exit 1
+  CMD curl -fsS http://127.0.0.1:${SERVER_PORT:-48080}/actuator/health || exit 1
 
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]

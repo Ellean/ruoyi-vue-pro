@@ -303,17 +303,11 @@ xq:
   # 上架分表原始 Excel 根目录（对齐旧 ERP backend/uploads/gigab2b/listing-templates）
   listing-template-root: D:/xq-xm/xq-erp/backend/uploads/gigab2b/listing-templates
   rpa:
-    # RPA 回调（芋道 admin-api）；生图 Aixoras 仍走旧 ERP，见 erp-base-url
+    # RPA 回调（芋道 admin-api）
     callback-base-url: ${XQ_RPA_CALLBACK_BASE_URL:http://127.0.0.1:48080/admin-api}
     callback-token: ${XQ_RPA_CALLBACK_TOKEN:}
-    # 旧 ERP（xq-erp）根地址，供 Aixoras/OSS；勿填 5666/48080。个人 RPA 未配或配错前端端口时用此兜底
-    erp-base-url: ${XQ_ERP_BASE_URL:http://${XQ_PUBLIC_HOST:localhost}}
+  # AI Key / 模型 / URL 在库表 ai_api_key，勿再写 yaml
   ai:
-    # ???? spring.ai.openai.*?????? sk-xxxx ??? mock
-    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
-    api-key: ${OPENAI_API_KEY:}
-    model: gpt-4o-mini
-    timeout-ms: 180000
     mock-when-empty: false
   # 阿里云机器翻译专业版（电商 title/description）；开通后填 AK，用于文案中文对照
   aliyun:
@@ -334,19 +328,5 @@ xq:
       base-url: https://toapis.cn
       access-token: ${XQ_TOAPIS_ACCESS_TOKEN:}
       user-id: ${XQ_TOAPIS_USER_ID:}
-      copy-model-keywords:
-        - terra
-        - gpt-5
-        - gpt-4
-        - claude
-        - chat
-      image-gen-model-keywords:
-        - gpt-image
-        - dall-e
-        - flux
-        - image
-      image-revise-model-keywords:
-        - image-edit
-        - image_edit
-        - revise
+      # 模型归类关键词默认值在 XqToapisUsageProperties，无需在此重复
 

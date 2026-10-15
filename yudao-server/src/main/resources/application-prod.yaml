@@ -68,8 +68,8 @@ spring:
 
   data:
     redis:
-      # 容器内 127.0.0.1 指向容器自身，宿主机共享实例需走 host-gateway
-      host: ${REDIS_HOST:host.docker.internal}
+      # Redis 由同一 Compose project 启动，默认走服务名；宿主机共享实例才需要 host.docker.internal
+      host: ${REDIS_HOST:redis}
       port: ${REDIS_PORT:6379}
       database: ${REDIS_DATABASE:0}
       password: ${REDIS_PASSWORD:}
@@ -202,13 +202,8 @@ xq:
     # 影刀本机回调/AI：走 Nginx 8088（已放行），勿用 127.0.0.1 或未放行的 48080
     callback-base-url: ${XQ_RPA_CALLBACK_BASE_URL:http://${XQ_PUBLIC_HOST:localhost}:8088/admin-api}
     callback-token: ${XQ_RPA_CALLBACK_TOKEN:}
-    # 旧 ERP（xq-erp Node）根地址，Aixoras/OSS 仍可能走此地址
-    erp-base-url: ${XQ_ERP_BASE_URL:http://${XQ_PUBLIC_HOST:localhost}}
+  # AI Key / 模型 / URL 在库表 ai_api_key，勿再写 yaml
   ai:
-    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
-    api-key: ${OPENAI_API_KEY:}
-    model: ${OPENAI_MODEL:gpt-4o-mini}
-    timeout-ms: 180000
     mock-when-empty: false
   aliyun:
     mt:
@@ -226,18 +221,4 @@ xq:
       base-url: ${XQ_TOAPIS_BASE_URL:https://toapis.cn}
       access-token: ${XQ_TOAPIS_ACCESS_TOKEN:}
       user-id: ${XQ_TOAPIS_USER_ID:}
-      copy-model-keywords:
-        - terra
-        - gpt-5
-        - gpt-4
-        - claude
-        - chat
-      image-gen-model-keywords:
-        - gpt-image
-        - dall-e
-        - flux
-        - image
-      image-revise-model-keywords:
-        - image-edit
-        - image_edit
-        - revise
+      # 模型归类关键词默认值在 XqToapisUsageProperties，无需在此重复
