@@ -95,6 +95,10 @@ jobs:
         if: ${{ matrix.name == 'Test' }}
         run: ./mvnw -B -s .mvn/settings-ci.xml test
 
+      - name: Verify deployment stack
+        if: ${{ matrix.name == 'Test' }}
+        run: python3 script/test_deploy.py
+
       - name: Compose image tags
         if: ${{ matrix.name == 'Docker Build' }}
         id: meta
@@ -311,16 +315,22 @@ jobs:
           # Compose config 会把字面量 $ 序列化成 $$，校验与掩码必须使用容器收到的原值。
           runtime = {key: value.replace('$$', '$') for key, value in
                      json.loads(parsed.stdout)['services']['app']['environment'].items()}
-          for key in ('MASTER_DATASOURCE_PASSWORD', 'REDIS_HOST', 'MYBATIS_ENCRYPTOR_PASSWORD'):
+          for key in ('MASTER_DATASOURCE_USERNAME', 'MASTER_DATASOURCE_PASSWORD', 'REDIS_PASSWORD', 'MYBATIS_ENCRYPTOR_PASSWORD'):
               if not (runtime.get(key) or '').strip():
                   fail(f'APP_ENV requires a nonempty {key}')
+          if runtime.get('REDIS_HOST') != 'redis':
+              fail('REDIS_HOST must be redis for the Compose-managed service')
           if not (runtime.get('MYSQL_HOST') or runtime.get('MASTER_DATASOURCE_URL') or '').strip():
               fail('APP_ENV requires MYSQL_HOST or MASTER_DATASOURCE_URL')
           if len(runtime['MYBATIS_ENCRYPTOR_PASSWORD'].encode()) not in (16, 24, 32):
               fail('MYBATIS_ENCRYPTOR_PASSWORD must contain 16, 24 or 32 UTF-8 bytes')
-          port = runtime.get('SERVER_PORT', '48080')
-          if not re.fullmatch(r'[0-9]+', port) or not 1 <= int(port) <= 65535:
-              fail('SERVER_PORT must be between 1 and 65535')
+          for key, default in (('SERVER_PORT', '48080'), ('REDIS_PORT', '6379')):
+              port = runtime.get(key, default)
+              if not re.fullmatch(r'[0-9]+', port) or not 1 <= int(port) <= 65535:
+                  fail(f'{key} must be between 1 and 65535')
+          database = runtime.get('REDIS_DATABASE', '0')
+          if not re.fullmatch(r'[0-9]+', database) or not 0 <= int(database) < 16:
+              fail('REDIS_DATABASE must be between 0 and 15')
           for value in runtime.values():
               if value:
                   escaped = value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
@@ -381,18 +391,22 @@ jobs:
             echo '::error::Remote Compose validation failed; inspect configuration locally on the host'
             exit 1
           fi
-          if ! "${compose[@]}" pull --quiet app > /dev/null 2>&1; then
+          if ! "${compose[@]}" pull --quiet app redis > /dev/null 2>&1; then
             echo '::error::Image pull failed; existing deployment has not been changed'
             exit 1
           fi
           expected=$(docker image inspect "ghcr.io/ellean/ruoyi-vue-pro:$tag" --format '{{.Id}}')
-          if ! "${compose[@]}" up -d --pull never --wait --wait-timeout 300 app > /dev/null 2>&1; then
-            echo '::error::Container failed to become healthy; inspect app logs on the host and roll back if needed'
+          expected_redis=$(docker image inspect "$("${compose[@]}" config --images redis)" --format '{{.Id}}')
+          if ! "${compose[@]}" up -d --pull never --wait --wait-timeout 300 app redis > /dev/null 2>&1; then
+            echo '::error::App or Redis failed to become healthy; inspect service logs on the host and roll back if needed'
             exit 1
           fi
           cid=$("${compose[@]}" ps -q app)
           [[ -n "$cid" && "$(docker inspect --format '{{.Image}}' "$cid")" == "$expected" ]]
           [[ "$(docker inspect --format '{{.State.Health.Status}}' "$cid")" == healthy ]]
+          redis_cid=$("${compose[@]}" ps -q redis)
+          [[ -n "$redis_cid" && "$(docker inspect --format '{{.Image}}' "$redis_cid")" == "$expected_redis" ]]
+          [[ "$(docker inspect --format '{{.State.Health.Status}}' "$redis_cid")" == healthy ]]
           code=$(curl -s --max-time 5 -o "$stage/health.json" -w '%{http_code}' "http://$bind_ip:$port/actuator/health")
           [[ "$code" == 200 ]]
           python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])).get("status") != "UP")' "$stage/health.json"
